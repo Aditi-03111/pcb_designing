@@ -43,6 +43,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from engines.circuit_synthesizer import synthesize_circuit
 
 # ── Optional heavy dependencies ───────────────────────────────────────────────
 
@@ -327,6 +328,8 @@ class GenerateResponse(BaseModel):
     success:          bool
     circuit_data:     Optional[Dict[str, Any]] = None
     template_used:    Optional[str]  = None
+    generation_mode:  str            = "llm"
+    intent:           Optional[Dict[str, Any]] = None
     generation_time_ms: float        = 0.0
     warnings:         List[str]      = Field(default_factory=list)
     error:            Optional[str]  = None
@@ -1247,27 +1250,50 @@ async def generate_circuit(
 
     circuit_data: Optional[Dict[str, Any]] = None
     template_used: Optional[str] = None
+    generation_mode = "template"
+    intent_data: Optional[Dict[str, Any]] = None
 
-    if best_name and best_name in _state.template_cache:
+    complex_prompt = any(token in prompt_lower for token in ("microcontroller", "mcu", "sensor", "fan", "motor", "analog", "buffer"))
+    strong_template_match = bool(best_name and best_name in _state.template_cache and best_score >= 90 and not complex_prompt)
+
+    if strong_template_match:
         circuit_data = _state.template_cache[best_name]
         template_used = best_name
-    elif _state.llm:
+    else:
         try:
-            # generate_circuit_json is async — must be awaited.  Without the
-            # await it returns a coroutine object (truthy) so circuit_data would
-            # be set to a coroutine instead of a dict, silently bypassing the
-            # template fallback and裂failing JSON serialisation later.
-            circuit_data = await _state.llm.generate_circuit_json(request.prompt) or None
+            synthesized = synthesize_circuit(request.prompt, request.constraints)
         except Exception as exc:
-            warnings.append(f"LLM generation failed: {exc}")
+            synthesized = None
+            warnings.append(f"Synthesis stage failed: {exc}")
+
+        if synthesized and synthesized.get("components") and synthesized.get("connections"):
+            circuit_data = synthesized
+            intent_data = synthesized.get("metadata", {}).get("intent")
+            template_used = f"synth:{(intent_data or {}).get('primary_family', 'custom')}"
+            generation_mode = "synthesized"
+            if best_name and best_name in _state.template_cache:
+                warnings.append(f"Template '{best_name}' matched, but synthesized mode was preferred for broader prompt coverage.")
+        elif best_name and best_name in _state.template_cache:
+            circuit_data = _state.template_cache[best_name]
+            template_used = best_name
+            generation_mode = "template"
+        elif _state.llm:
+            try:
+                # generate_circuit_json is async — must be awaited.  Without the
+                # await it returns a coroutine object (truthy) so circuit_data would
+                # be set to a coroutine instead of a dict, silently bypassing the
+                # template fallback and failing JSON serialisation later.
+                circuit_data = await _state.llm.generate_circuit_json(request.prompt) or None
+                generation_mode = "llm"
+            except Exception as exc:
+                warnings.append(f"LLM generation failed: {exc}")
 
     if not circuit_data:
         return GenerateResponse(
             success=False,
             error=(
-                "No matching template found and LLM is unavailable. "
-                "Try: '555 timer', '3.3V regulator', 'LED resistor', "
-                "'op-amp buffer', 'MOSFET switch'."
+                "Generation failed across template, synthesized, and LLM paths. "
+                "Try a more explicit prompt with supply, input, output, and function details."
             ),
             warnings=warnings,
             request_id=request_id,
@@ -1354,6 +1380,8 @@ async def generate_circuit(
         success=True,
         circuit_data=board_dict,
         template_used=template_used,
+        generation_mode=generation_mode,
+        intent=intent_data,
         generation_time_ms=round((time.perf_counter() - t0) * 1000, 1),
         warnings=warnings,
         request_id=request_id,

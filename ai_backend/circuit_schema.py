@@ -167,6 +167,16 @@ class Pin(BaseModel):
         """Check if this is a power pin."""
         return self.name.upper() in ['VCC', 'VDD', '3V3', '5V', 'GND', 'VSS']
 
+    @property
+    def x(self) -> float:
+        """Compatibility alias for exporters expecting flat pin coordinates."""
+        return self.position.x
+
+    @property
+    def y(self) -> float:
+        """Compatibility alias for exporters expecting flat pin coordinates."""
+        return self.position.y
+
 
 class Component(BaseModel):
     """

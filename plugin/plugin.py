@@ -1154,7 +1154,8 @@ class AIPCBFrame(wx.Frame):
 
         summary = (
             f"Generation complete!\n\n"
-            f"Template: {result.get('template_used', 'LLM/custom')}\n"
+            f"Mode: {result.get('generation_mode', 'llm')}\n"
+            f"Source: {result.get('template_used', 'LLM/custom')}\n"
             f"Components: {component_count}\n"
             f"Nets: {net_count}\n"
             f"Time: {result.get('generation_time_ms', 0):.1f} ms\n"

@@ -514,7 +514,10 @@ def _lib_symbol_power(symbol_name: str, pin_name: str, pin_number: str = "1",
 def _lib_symbol_generic(lib_id: str, ref_prefix: str, part_name: str,
                         pins: list[Pin]) -> str:
     """Generate a generic rectangular lib_symbol for unknown components."""
-    uid = part_name.replace(" ", "_").replace("-", "_")
+    # KiCad expects child unit names to use the same part-name prefix as the
+    # parent lib symbol. Preserve the actual part token from lib_id instead of
+    # inventing a sanitized variant like ATmega328P_AU for ATmega328P-AU.
+    uid = lib_id.split(":", 1)[1] if ":" in lib_id else part_name
     n_pins = len(pins)
     # Divide pins: left side & right side
     left_count = (n_pins + 1) // 2

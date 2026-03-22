@@ -442,46 +442,20 @@ class AIPlacementPlugin(pcbnew.ActionPlugin):
     """Advanced KiCad plugin for AI-powered PCB design."""
     
     def defaults(self):
-        self.name = "AI PCB Assistant Pro"
+        self.name = "AI KiCad Plugin"
         self.category = "AI Tools"
-        self.description = "Advanced AI-powered placement, routing, and DFM"
+        self.description = "AI-powered PCB generation, placement, and DFM dashboard"
         self.show_toolbar_button = True
         icon_path = os.path.join(os.path.dirname(__file__), "icon_32x32.png")
         self.icon_file_name = icon_path if os.path.exists(icon_path) else ""
     
     def Run(self):
-        """Main entry point.
-
-        IMPORTANT: We store the frame on ``self`` so that Python's garbage
-        collector does not destroy it as soon as ``Run()`` returns.  Without
-        this the window flashes briefly and vanishes.
-        """
+        """Open the dashboard launcher for the current board."""
         board = pcbnew.GetBoard()
         if board is None:
             wx.MessageBox("No board is open.", "Error", wx.OK | wx.ICON_ERROR)
             return
 
-        # If a frame is already open, bring it to the front instead of
-        # creating a duplicate.  We guard with try/except because the C++
-        # wx.Frame object may already have been destroyed by the time Python
-        # tries to call methods on it.
-        existing: Optional["AIPCBFrame"] = getattr(self, "_frame", None)
-        if existing is not None:
-            try:
-                alive = existing and existing.IsShown()
-            except Exception:
-                alive = False
-            if alive:
-                try:
-                    existing.board = board
-                    existing._extract_board_data()
-                    existing.Raise()
-                    return
-                except Exception:
-                    pass
-            self._frame = None  # stale reference — fall through to create new
-
-        # Check backend with timeout
         if not self._check_backend():
             dlg = BackendSetupDialog(None)
             if dlg.ShowModal() != wx.ID_OK:
@@ -489,10 +463,28 @@ class AIPlacementPlugin(pcbnew.ActionPlugin):
                 return
             dlg.Destroy()
 
-        # Show main window — keep reference alive on self
+        self._ensure_frame(board)
+        dlg = AIDashboardDialog(None, self, board)
+        dlg.ShowModal()
+        dlg.Destroy()
+
+    def _ensure_frame(self, board: pcbnew.BOARD) -> "AIPCBFrame":
+        existing: Optional["AIPCBFrame"] = getattr(self, "_frame", None)
+        if existing is not None:
+            try:
+                existing.board = board
+                existing._extract_board_data()
+                return existing
+            except Exception:
+                self._frame = None
         self._frame = AIPCBFrame(None, board)
-        self._frame.Show()
-        self._frame.Raise()
+        return self._frame
+
+    def _show_frame(self, board: pcbnew.BOARD) -> "AIPCBFrame":
+        frame = self._ensure_frame(board)
+        frame.Show()
+        frame.Raise()
+        return frame
     
     def _check_backend(self) -> bool:
         """Check if backend is available."""
@@ -1343,6 +1335,204 @@ class AIPCBFrame(wx.Frame):
             return float(fp.GetOrientation()) / 10.0  # tenths of degree
         except Exception:
             return 0.0
+
+
+# ── Dashboard Dialog ──────────────────────────────────────────────────────────
+
+class AIDashboardDialog(wx.Dialog):
+    """Dashboard-first launcher styled after the prototype plugin UI."""
+
+    def __init__(self, parent, plugin: AIPlacementPlugin, board: pcbnew.BOARD):
+        super().__init__(parent, title="AI KiCad Plugin", size=(460, 650))
+        self.plugin = plugin
+        self.board = board
+        self.SetBackgroundColour(wx.Colour(26, 26, 30))
+        self._init_ui()
+        self._refresh_health()
+
+    def _init_ui(self):
+        panel = wx.Panel(self)
+        panel.SetBackgroundColour(wx.Colour(26, 26, 30))
+        vbox = wx.BoxSizer(wx.VERTICAL)
+
+        title = wx.StaticText(panel, label="AI-Powered KiCad Plugin")
+        title.SetForegroundColour(wx.Colour(0, 210, 255))
+        title.SetFont(wx.Font(16, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+        vbox.Add(title, 0, wx.ALIGN_CENTER | wx.TOP, 22)
+
+        subtitle = wx.StaticText(panel, label="Local AI • No Cloud • 100% Private")
+        subtitle.SetForegroundColour(wx.Colour(185, 185, 190))
+        subtitle.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
+        vbox.Add(subtitle, 0, wx.ALIGN_CENTER | wx.TOP, 4)
+
+        line = wx.StaticLine(panel)
+        vbox.Add(line, 0, wx.EXPAND | wx.ALL, 16)
+
+        self.btn_generate = self._action_button(panel, "Auto Generate Schematic", wx.Colour(0, 120, 220))
+        self.btn_write = self._action_button(panel, "Open Full PCB Tools", wx.Colour(0, 180, 180))
+        self.btn_netlist = self._action_button(panel, "Generate Netlist", wx.Colour(40, 70, 220))
+        self.btn_place = self._action_button(panel, "AI Component Placement", wx.Colour(0, 165, 95))
+        self.btn_mfg = self._action_button(panel, "Manufacturing Checks", wx.Colour(220, 125, 0))
+        self.btn_drc = self._action_button(panel, "Run DRC Check", wx.Colour(165, 45, 180))
+
+        for btn in (self.btn_generate, self.btn_write, self.btn_netlist, self.btn_place, self.btn_mfg, self.btn_drc):
+            vbox.Add(btn, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 16)
+
+        self.btn_generate.Bind(wx.EVT_BUTTON, self._on_generate)
+        self.btn_write.Bind(wx.EVT_BUTTON, self._on_open_full)
+        self.btn_netlist.Bind(wx.EVT_BUTTON, self._on_netlist)
+        self.btn_place.Bind(wx.EVT_BUTTON, self._on_placement)
+        self.btn_mfg.Bind(wx.EVT_BUTTON, self._on_dfm)
+        self.btn_drc.Bind(wx.EVT_BUTTON, self._on_drc)
+
+        self.status = wx.StaticText(panel, label="Checking backend status...")
+        self.status.SetForegroundColour(wx.Colour(0, 210, 110))
+        self.status.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+        vbox.Add(self.status, 0, wx.ALIGN_CENTER | wx.TOP, 18)
+
+        footer = wx.StaticText(panel, label="Powered by the updated AI PCB Assistant backend")
+        footer.SetForegroundColour(wx.Colour(120, 120, 130))
+        footer.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
+        vbox.Add(footer, 0, wx.ALIGN_CENTER | wx.TOP | wx.BOTTOM, 12)
+
+        panel.SetSizer(vbox)
+
+    def _action_button(self, parent, label: str, color: wx.Colour) -> wx.Button:
+        btn = wx.Button(parent, label=label, size=(-1, 46))
+        btn.SetBackgroundColour(color)
+        btn.SetForegroundColour(wx.WHITE)
+        btn.SetFont(wx.Font(11, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+        return btn
+
+    def _refresh_health(self):
+        try:
+            req = urllib.request.Request(f"{CONFIG.backend_url}/health", method="GET")
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                data = json.loads(resp.read().decode())
+            mode = "healthy" if data.get("llm_loaded") else "running"
+            self._set_status(f"Ready — FastAPI + backend {mode}", (0, 210, 110))
+        except Exception as exc:
+            self._set_status(f"Backend unavailable — {exc}", (255, 120, 120))
+
+    def _set_status(self, message: str, color=(0, 210, 110)):
+        self.status.SetLabel(message)
+        self.status.SetForegroundColour(wx.Colour(*color))
+        self.status.Refresh()
+
+    def _prompt_dialog(self, title: str, message: str, default: str) -> Optional[str]:
+        dlg = wx.TextEntryDialog(self, message, title, default)
+        value = None
+        if dlg.ShowModal() == wx.ID_OK:
+            value = dlg.GetValue().strip()
+        dlg.Destroy()
+        return value or None
+
+    def _post_json(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        req = urllib.request.Request(
+            f"{CONFIG.backend_url}{path}",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=CONFIG.request_timeout) as resp:
+            return json.loads(resp.read().decode())
+
+    def _show_text(self, title: str, text: str):
+        dlg = wx.MessageDialog(self, text, title, wx.OK | wx.ICON_INFORMATION)
+        dlg.ShowModal()
+        dlg.Destroy()
+
+    def _on_generate(self, event):
+        prompt = self._prompt_dialog(
+            "Auto Generate Schematic",
+            "Describe the circuit to generate:",
+            "12V to 3.3V regulator for sensor board with status LED",
+        )
+        if not prompt:
+            return
+        self._set_status("Generating schematic...", (255, 210, 90))
+        try:
+            result = self._post_json("/generate", {"prompt": prompt, "priority": "quality"})
+            if not result.get("success"):
+                raise RuntimeError(result.get("error", "Unknown backend error"))
+            circuit_data = result.get("circuit_data") or {}
+            summary = (
+                f"Mode: {result.get('generation_mode', 'llm')}\n"
+                f"Source: {result.get('template_used', 'n/a')}\n"
+                f"Components: {len(circuit_data.get('components', []))}\n"
+                f"Nets: {len(circuit_data.get('connections', []))}\n"
+                f"Download: {result.get('download_url', 'n/a')}"
+            )
+            self._set_status("Schematic generated.", (0, 210, 110))
+            self._show_text("Schematic Generated", summary)
+        except Exception as exc:
+            self._set_status("Generation failed.", (255, 120, 120))
+            self._show_text("Error", str(exc))
+
+    def _on_open_full(self, event):
+        frame = self.plugin._show_frame(self.board)
+        self._set_status("Opened full PCB tools.", (0, 210, 110))
+        frame.SetStatusText("Opened full PCB tools from dashboard")
+
+    def _on_netlist(self, event):
+        prompt = self._prompt_dialog(
+            "Generate Netlist",
+            "Describe the circuit to summarize as a netlist:",
+            "op amp buffer for analog sensor output",
+        )
+        if not prompt:
+            return
+        self._set_status("Generating netlist summary...", (255, 210, 90))
+        try:
+            result = self._post_json("/generate", {"prompt": prompt, "priority": "quality"})
+            if not result.get("success"):
+                raise RuntimeError(result.get("error", "Unknown backend error"))
+            connections = (result.get("circuit_data") or {}).get("connections", [])
+            lines = [f"{conn.get('net')}: {', '.join(f'{p.get('ref')}.{p.get('pin')}' for p in conn.get('pins', []))}" for conn in connections[:12]]
+            text = "Netlist summary\n\n" + ("\n".join(lines) if lines else "No nets returned")
+            self._set_status("Netlist generated.", (0, 210, 110))
+            self._show_text("Generate Netlist", text)
+        except Exception as exc:
+            self._set_status("Netlist generation failed.", (255, 120, 120))
+            self._show_text("Error", str(exc))
+
+    def _on_placement(self, event):
+        self._set_status("Running placement optimization...", (255, 210, 90))
+        try:
+            frame = self.plugin._show_frame(self.board)
+            frame._extract_board_data()
+            data = frame._get_board_data_dict()
+            data["thermal_aware"] = CONFIG.thermal_aware
+            result = self._post_json("/placement/optimize?algorithm=auto", data)
+            frame._apply_placement_result(result)
+            self._set_status("Placement optimization complete.", (0, 210, 110))
+        except Exception as exc:
+            self._set_status("Placement failed.", (255, 120, 120))
+            self._show_text("Error", str(exc))
+
+    def _on_dfm(self, event):
+        self._run_board_check("/dfm/check", "Manufacturing Checks")
+
+    def _on_drc(self, event):
+        self._run_board_check("/dfm/check", "Run DRC Check")
+
+    def _run_board_check(self, path: str, title: str):
+        self._set_status(f"Running {title.lower()}...", (255, 210, 90))
+        try:
+            frame = self.plugin._ensure_frame(self.board)
+            frame._extract_board_data()
+            result = self._post_json(path, frame._get_board_data_dict())
+            violations = result if isinstance(result, list) else result.get("violations", [])
+            if not violations:
+                text = "No issues found."
+            else:
+                lines = [f"[{v.get('severity', 'warning').upper()}] {v.get('message', 'No details')}" for v in violations[:12]]
+                text = "\n".join(lines)
+            self._set_status(f"{title} complete.", (0, 210, 110))
+            self._show_text(title, text)
+        except Exception as exc:
+            self._set_status(f"{title} failed.", (255, 120, 120))
+            self._show_text("Error", str(exc))
 
 
 # ── Legacy Dialog for compatibility ───────────────────────────────────────────

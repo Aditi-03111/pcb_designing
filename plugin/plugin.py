@@ -24,18 +24,6 @@ from urllib.parse import urljoin
 
 import pcbnew
 import wx
-try:
-    import wx.lib.scrolledpanel as scrolled
-    _ScrolledPanelClass = scrolled.ScrolledPanel
-except Exception:
-    _ScrolledPanelClass = wx.ScrolledWindow
-
-try:
-    from wx.lib.floatcanvas import NavCanvas as _NavCanvas
-    HAS_FLOATCANVAS = True
-except Exception:
-    _NavCanvas = None
-    HAS_FLOATCANVAS = False
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -212,27 +200,18 @@ HTTP_CLIENT = AsyncHTTPClient()
 
 # ── Visualization Canvas ──────────────────────────────────────────────────────
 
-if HAS_FLOATCANVAS:
-    _CanvasBase = _NavCanvas.NavCanvas
-else:
-    _CanvasBase = wx.ScrolledWindow
-
-
-class PlacementPreviewCanvas(_CanvasBase):
+class PlacementPreviewCanvas(wx.ScrolledWindow):
     """Interactive canvas for placement preview.
     Falls back to a wx.ScrolledWindow with manual DC drawing when
     wx.lib.floatcanvas is not available in the KiCad Python environment.
     """
 
     def __init__(self, parent):
-        if HAS_FLOATCANVAS:
-            super().__init__(parent, size=(400, 400))
-        else:
-            super().__init__(parent, size=(400, 400),
-                             style=wx.HSCROLL | wx.VSCROLL)
-            self.SetScrollRate(5, 5)
-            self.SetBackgroundColour(wx.Colour(40, 40, 40))
-            self.Bind(wx.EVT_PAINT, self._on_paint)
+        super().__init__(parent, size=(400, 400),
+                         style=wx.HSCROLL | wx.VSCROLL)
+        self.SetScrollRate(5, 5)
+        self.SetBackgroundColour(wx.Colour(40, 40, 40))
+        self.Bind(wx.EVT_PAINT, self._on_paint)
 
         self.board_width = 100.0
         self.board_height = 80.0
@@ -248,10 +227,7 @@ class PlacementPreviewCanvas(_CanvasBase):
     def set_board_dimensions(self, width: float, height: float):
         self.board_width = width
         self.board_height = height
-        if HAS_FLOATCANVAS:
-            self._draw_board()
-        else:
-            self.Refresh()
+        self.Refresh()
 
     def update_components(self, components: List[ComponentInfo],
                           nets: Optional[List[NetInfo]] = None):
@@ -266,65 +242,9 @@ class PlacementPreviewCanvas(_CanvasBase):
             self._draw()
 
     def _draw(self):
-        if HAS_FLOATCANVAS:
-            self._draw_floatcanvas()
-        else:
-            self.Refresh()
+        self.Refresh()
 
-    # ── FloatCanvas rendering ─────────────────────────────────────────────────
 
-    def _draw_board(self):
-        if not HAS_FLOATCANVAS:
-            return
-        self.Canvas.ClearAll()
-        w = self.board_width * self.scale
-        h = self.board_height * self.scale
-        self.Canvas.AddRectangle(
-            (-w / 2, -h / 2), (w, h),
-            LineColor="black", LineWidth=2,
-            FillColor="darkgreen", FillStyle="CrossHatch",
-        )
-        self.Canvas.ZoomToBB()
-
-    def _draw_floatcanvas(self):
-        if not HAS_FLOATCANVAS:
-            return
-        self._draw_board()
-        if self.show_ratsnest and self.nets:
-            self._draw_ratsnest_fc()
-        for ref, comp in self.components.items():
-            x = (comp.x - self.board_width / 2) * self.scale
-            y = -(comp.y - self.board_height / 2) * self.scale
-            color = self._get_component_color(comp)
-            if ref in self.selected_refs:
-                color = "red"
-            w2 = max(2.0, comp.width * self.scale * 0.8)
-            h2 = max(2.0, comp.height * self.scale * 0.8)
-            self.Canvas.AddRectangle(
-                (x - w2 / 2, y - h2 / 2), (w2, h2),
-                LineColor="black", LineWidth=1, FillColor=color,
-            )
-            self.Canvas.AddText(ref, (x, y), Size=8, Color="white", Position="cc")
-        self.Canvas.Draw()
-
-    def _draw_ratsnest_fc(self):
-        for net in self.nets:
-            if len(net.pins) < 2:
-                continue
-            positions = []
-            for pin in net.pins:
-                if pin["ref"] in self.components:
-                    c = self.components[pin["ref"]]
-                    positions.append((
-                        (c.x - self.board_width / 2) * self.scale,
-                        -(c.y - self.board_height / 2) * self.scale,
-                    ))
-            color = self._get_net_color(net)
-            for i in range(len(positions) - 1):
-                self.Canvas.AddLine(
-                    positions[i], positions[i + 1],
-                    LineColor=color, LineWidth=1, LineStyle="Dot",
-                )
 
     # ── wx.ScrolledWindow (fallback) rendering ────────────────────────────────
 
@@ -426,13 +346,7 @@ class PlacementPreviewCanvas(_CanvasBase):
         return "lightgray"
 
     def on_size(self, event):
-        if HAS_FLOATCANVAS:
-            try:
-                self.Canvas.ZoomToBB()
-            except Exception:
-                pass
-        else:
-            self.Refresh()
+        self.Refresh()
         event.Skip()
 
 
@@ -451,34 +365,55 @@ class AIPlacementPlugin(pcbnew.ActionPlugin):
     
     def Run(self):
         """Open the dashboard launcher for the current board."""
-        board = pcbnew.GetBoard()
-        if board is None:
-            wx.MessageBox("No board is open.", "Error", wx.OK | wx.ICON_ERROR)
-            return
-
-        if not self._check_backend():
-            dlg = BackendSetupDialog(None)
-            if dlg.ShowModal() != wx.ID_OK:
-                dlg.Destroy()
+        try:
+            board = pcbnew.GetBoard()
+            if board is None:
+                wx.MessageBox("No board is open.", "Error", wx.OK | wx.ICON_ERROR)
                 return
-            dlg.Destroy()
 
-        self._ensure_frame(board)
-        dlg = AIDashboardDialog(None, self, board)
-        dlg.ShowModal()
-        dlg.Destroy()
+            parent = self._get_top_window()
+
+            if not self._check_backend():
+                dlg = BackendSetupDialog(parent)
+                if dlg.ShowModal() != wx.ID_OK:
+                    dlg.Destroy()
+                    return
+                dlg.Destroy()
+
+            # Initialize health check and UI safely
+            dlg = AIDashboardDialog(parent, self, board)
+            dlg.Show()
+        except Exception as e:
+            import traceback
+            logger.error(traceback.format_exc())
+            wx.MessageBox(f"Plugin Error: {e}", "AI PCB Assistant Error")
 
     def _ensure_frame(self, board: pcbnew.BOARD) -> "AIPCBFrame":
-        existing: Optional["AIPCBFrame"] = getattr(self, "_frame", None)
-        if existing is not None:
+        # Check if frame exists and is still valid (not deleted)
+        existing = getattr(self, "_frame", None)
+        if existing:
             try:
-                existing.board = board
-                existing._extract_board_data()
-                return existing
+                # wx objects can become 'dead' even if the Python object exists
+                if not existing:
+                    existing = None
+                else:
+                    existing.board = board
+                    existing._extract_board_data()
+                    return existing
             except Exception:
-                self._frame = None
-        self._frame = AIPCBFrame(None, board)
+                existing = None
+        
+        self._frame = AIPCBFrame(self._get_top_window(), board)
         return self._frame
+
+    def _get_top_window(self) -> Optional[wx.Window]:
+        try:
+            app = wx.GetApp()
+            if hasattr(app, "GetTopWindow"):
+                return app.GetTopWindow()
+        except Exception:
+            pass
+        return None
 
     def _show_frame(self, board: pcbnew.BOARD) -> "AIPCBFrame":
         frame = self._ensure_frame(board)
@@ -675,7 +610,7 @@ class AIPCBFrame(wx.Frame):
     
     def _create_left_panel(self, parent) -> wx.Panel:
         """Create left control panel."""
-        panel = _ScrolledPanelClass(parent, size=(400, -1))
+        panel = wx.ScrolledWindow(parent, size=(400, -1))
         sizer = wx.BoxSizer(wx.VERTICAL)
         
         # AI Assistant section
@@ -1339,11 +1274,11 @@ class AIPCBFrame(wx.Frame):
 
 # ── Dashboard Dialog ──────────────────────────────────────────────────────────
 
-class AIDashboardDialog(wx.Dialog):
+class AIDashboardDialog(wx.Frame):
     """Dashboard-first launcher styled after the prototype plugin UI."""
 
     def __init__(self, parent, plugin: AIPlacementPlugin, board: pcbnew.BOARD):
-        super().__init__(parent, title="AI KiCad Plugin", size=(460, 650))
+        super().__init__(parent, title="AI KiCad Plugin", size=(460, 650), style=wx.DEFAULT_FRAME_STYLE | wx.STAY_ON_TOP)
         self.plugin = plugin
         self.board = board
         self.SetBackgroundColour(wx.Colour(26, 26, 30))
@@ -1456,15 +1391,53 @@ class AIDashboardDialog(wx.Dialog):
             if not result.get("success"):
                 raise RuntimeError(result.get("error", "Unknown backend error"))
             circuit_data = result.get("circuit_data") or {}
-            summary = (
-                f"Mode: {result.get('generation_mode', 'llm')}\n"
-                f"Source: {result.get('template_used', 'n/a')}\n"
-                f"Components: {len(circuit_data.get('components', []))}\n"
-                f"Nets: {len(circuit_data.get('connections', []))}\n"
-                f"Download: {result.get('download_url', 'n/a')}"
-            )
-            self._set_status("Schematic generated.", (0, 210, 110))
-            self._show_text("Schematic Generated", summary)
+            download_url = result.get('download_url')
+            
+            if download_url:
+                full_url = f"{CONFIG.backend_url}{download_url}"
+                req = urllib.request.Request(full_url, method="GET")
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    sch_data = resp.read()
+                
+                default_name = download_url.split('/')[-1]
+                default_dir = os.path.dirname(self.board.GetFileName()) if self.board and self.board.GetFileName() else ""
+                
+                with wx.FileDialog(self, "Save Generated Schematic", defaultDir=default_dir,
+                                   defaultFile=default_name, wildcard="KiCad Schematic (*.kicad_sch)|*.kicad_sch",
+                                   style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT) as dlg:
+                    if dlg.ShowModal() == wx.ID_OK:
+                        save_path = dlg.GetPath()
+                        with open(save_path, 'wb') as f:
+                            f.write(sch_data)
+                        
+                        summary = (
+                            f"Schematic successfully saved to:\n{save_path}\n\n"
+                            f"Mode: {result.get('generation_mode', 'llm')}\n"
+                            f"Components: {len(circuit_data.get('components', []))}\n"
+                            f"Nets: {len(circuit_data.get('connections', []))}"
+                        )
+                        self._set_status("Schematic saved.", (0, 210, 110))
+                        
+                        # Show success and offer to open
+                        dlg2 = wx.MessageDialog(self, summary + "\n\nWould you like to open it now?", "Schematic Saved", wx.YES_NO | wx.ICON_INFORMATION)
+                        if dlg2.ShowModal() == wx.ID_YES:
+                            import platform, subprocess
+                            if platform.system() == 'Darwin':
+                                subprocess.Popen(['open', save_path])
+                            elif platform.system() == 'Windows':
+                                os.startfile(save_path)
+                            else:
+                                subprocess.Popen(['xdg-open', save_path])
+                        dlg2.Destroy()
+                    else:
+                        self._set_status("Save cancelled.", (200, 200, 0))
+            else:
+                summary = (
+                    f"Mode: {result.get('generation_mode', 'llm')}\n"
+                    f"Components: {len(circuit_data.get('components', []))}\n"
+                )
+                self._set_status("Schematic generated (no download url).", (200, 200, 0))
+                self._show_text("Schematic Generated", summary)
         except Exception as exc:
             self._set_status("Generation failed.", (255, 120, 120))
             self._show_text("Error", str(exc))
@@ -1488,7 +1461,11 @@ class AIDashboardDialog(wx.Dialog):
             if not result.get("success"):
                 raise RuntimeError(result.get("error", "Unknown backend error"))
             connections = (result.get("circuit_data") or {}).get("connections", [])
-            lines = [f"{conn.get('net')}: {', '.join(f'{p.get('ref')}.{p.get('pin')}' for p in conn.get('pins', []))}" for conn in connections[:12]]
+            lines = []
+            for conn in connections[:12]:
+                net_name = conn.get('net')
+                pin_str = ', '.join([f"{p.get('ref')}.{p.get('pin')}" for p in conn.get('pins', [])])
+                lines.append(f"{net_name}: {pin_str}")
             text = "Netlist summary\n\n" + ("\n".join(lines) if lines else "No nets returned")
             self._set_status("Netlist generated.", (0, 210, 110))
             self._show_text("Generate Netlist", text)
@@ -1519,7 +1496,8 @@ class AIDashboardDialog(wx.Dialog):
     def _run_board_check(self, path: str, title: str):
         self._set_status(f"Running {title.lower()}...", (255, 210, 90))
         try:
-            frame = self.plugin._ensure_frame(self.board)
+            # Fix: Ensure frame is shown, not just instantiated, to prevent Mac OpenGL crashes
+            frame = self.plugin._show_frame(self.board)
             frame._extract_board_data()
             result = self._post_json(path, frame._get_board_data_dict())
             violations = result if isinstance(result, list) else result.get("violations", [])

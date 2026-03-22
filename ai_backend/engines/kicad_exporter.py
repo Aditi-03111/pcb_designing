@@ -116,7 +116,7 @@ def _property(name: str, value: str, at_x: float, at_y: float,
 
 def _lib_symbol_resistor(lib_id: str = "Device:R") -> str:
     """Generate lib_symbol entry for a resistor."""
-    uid = "R"
+    uid = lib_id.split(":")[-1] if ":" in lib_id else lib_id
     return f"""    (symbol {_quote(lib_id)}
       (pin_numbers hide)
       (pin_names (offset 0) hide)
@@ -146,7 +146,7 @@ def _lib_symbol_resistor(lib_id: str = "Device:R") -> str:
 
 def _lib_symbol_capacitor(lib_id: str = "Device:C") -> str:
     """Generate lib_symbol entry for a capacitor."""
-    uid = "C"
+    uid = lib_id.split(":")[-1] if ":" in lib_id else lib_id
     return f"""    (symbol {_quote(lib_id)}
       (pin_numbers hide)
       (pin_names (offset 0.254) hide)
@@ -182,7 +182,7 @@ def _lib_symbol_capacitor(lib_id: str = "Device:C") -> str:
 
 def _lib_symbol_led(lib_id: str = "Device:LED") -> str:
     """Generate lib_symbol entry for an LED."""
-    uid = "LED"
+    uid = lib_id.split(":")[-1] if ":" in lib_id else lib_id
     return f"""    (symbol {_quote(lib_id)}
       (pin_numbers hide)
       (pin_names (offset 1.016) hide)
@@ -233,7 +233,7 @@ def _lib_symbol_led(lib_id: str = "Device:LED") -> str:
 
 def _lib_symbol_ne555(lib_id: str = "Timer:NE555") -> str:
     """Generate lib_symbol entry for NE555 timer IC."""
-    uid = "NE555"
+    uid = lib_id.split(":")[-1] if ":" in lib_id else lib_id
     return f"""    (symbol {_quote(lib_id)}
       (pin_names (offset 1.016))
       (in_bom yes) (on_board yes)
@@ -286,7 +286,7 @@ def _lib_symbol_ne555(lib_id: str = "Timer:NE555") -> str:
 
 def _lib_symbol_inductor(lib_id: str = "Device:L") -> str:
     """Generate lib_symbol entry for an inductor."""
-    uid = "L"
+    uid = lib_id.split(":")[-1] if ":" in lib_id else lib_id
     return f"""    (symbol {_quote(lib_id)}
       (pin_numbers hide)
       (pin_names (offset 1.016) hide)
@@ -320,7 +320,7 @@ def _lib_symbol_inductor(lib_id: str = "Device:L") -> str:
 
 def _lib_symbol_diode(lib_id: str = "Device:D") -> str:
     """Generate lib_symbol entry for a diode."""
-    uid = "D"
+    uid = lib_id.split(":")[-1] if ":" in lib_id else lib_id
     return f"""    (symbol {_quote(lib_id)}
       (pin_numbers hide)
       (pin_names (offset 1.016) hide)
@@ -361,7 +361,7 @@ def _lib_symbol_diode(lib_id: str = "Device:D") -> str:
 
 def _lib_symbol_regulator(lib_id: str = "Regulator_Linear:AMS1117-3.3") -> str:
     """Generate lib_symbol entry for a 3-pin linear voltage regulator (AMS1117 style)."""
-    uid = "AMS1117"
+    uid = lib_id.split(":")[-1] if ":" in lib_id else lib_id
     return f"""    (symbol {_quote(lib_id)}
       (pin_names (offset 1.016))
       (in_bom yes) (on_board yes)
@@ -394,7 +394,7 @@ def _lib_symbol_regulator(lib_id: str = "Regulator_Linear:AMS1117-3.3") -> str:
 
 def _lib_symbol_opamp(lib_id: str = "Amplifier_Operational:LM358") -> str:
     """Generate lib_symbol for a single-section op-amp (LM358 / LM741 style)."""
-    uid = "LM358"
+    uid = lib_id.split(":")[-1] if ":" in lib_id else lib_id
     return f"""    (symbol {_quote(lib_id)}
       (pin_names (offset 1.016))
       (in_bom yes) (on_board yes)
@@ -436,7 +436,7 @@ def _lib_symbol_opamp(lib_id: str = "Amplifier_Operational:LM358") -> str:
 
 def _lib_symbol_nmos(lib_id: str = "Device:Q_NMOS_GSD") -> str:
     """Generate lib_symbol for an N-channel MOSFET (G/S/D pinout, e.g. 2N7002)."""
-    uid = "NMOS"
+    uid = lib_id.split(":")[-1] if ":" in lib_id else lib_id
     return f"""    (symbol {_quote(lib_id)}
       (pin_names (offset 1.016))
       (in_bom yes) (on_board yes)

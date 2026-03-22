@@ -1304,7 +1304,7 @@ class AIDashboardDialog(wx.Frame):
         vbox.Add(line, 0, wx.EXPAND | wx.ALL, 16)
 
         self.btn_generate = self._action_button(panel, "Auto Generate Schematic", wx.Colour(0, 120, 220))
-        self.btn_write = self._action_button(panel, "Open Full PCB Tools", wx.Colour(0, 180, 180))
+        self.btn_write = self._action_button(panel, "Board Summary", wx.Colour(0, 180, 180))
         self.btn_netlist = self._action_button(panel, "Generate Netlist", wx.Colour(40, 70, 220))
         self.btn_place = self._action_button(panel, "AI Component Placement", wx.Colour(0, 165, 95))
         self.btn_mfg = self._action_button(panel, "Manufacturing Checks", wx.Colour(220, 125, 0))
@@ -1314,7 +1314,7 @@ class AIDashboardDialog(wx.Frame):
             vbox.Add(btn, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 16)
 
         self.btn_generate.Bind(wx.EVT_BUTTON, self._on_generate)
-        self.btn_write.Bind(wx.EVT_BUTTON, self._on_open_full)
+        self.btn_write.Bind(wx.EVT_BUTTON, self._on_board_summary)
         self.btn_netlist.Bind(wx.EVT_BUTTON, self._on_netlist)
         self.btn_place.Bind(wx.EVT_BUTTON, self._on_placement)
         self.btn_mfg.Bind(wx.EVT_BUTTON, self._on_dfm)
@@ -1442,10 +1442,139 @@ class AIDashboardDialog(wx.Frame):
             self._set_status("Generation failed.", (255, 120, 120))
             self._show_text("Error", str(exc))
 
-    def _on_open_full(self, event):
-        frame = self.plugin._show_frame(self.board)
-        self._set_status("Opened full PCB tools.", (0, 210, 110))
-        frame.SetStatusText("Opened full PCB tools from dashboard")
+    def _classify_net(self, name: str) -> str:
+        name_upper = (name or "").upper()
+        if any(p in name_upper for p in ["VCC", "VDD", "3V3", "5V", "12V", "VIN", "PWR"]):
+            return "power"
+        if any(g in name_upper for g in ["GND", "VSS", "AGND", "DGND"]):
+            return "ground"
+        if any(c in name_upper for c in ["CLK", "CLOCK", "OSC"]):
+            return "clock"
+        if any(a in name_upper for a in ["ADC", "DAC", "SENSE", "ANALOG"]):
+            return "analog"
+        return "signal"
+
+    def _collect_board_data(self) -> Dict[str, Any]:
+        components: List[Dict[str, Any]] = []
+        connections: List[Dict[str, Any]] = []
+        try:
+            bbox = self.board.GetBoardEdgesBoundingBox()
+            board_width = pcbnew.ToMM(bbox.GetWidth())
+            board_height = pcbnew.ToMM(bbox.GetHeight())
+        except Exception:
+            board_width = 100.0
+            board_height = 80.0
+
+        try:
+            footprints = list(self.board.GetFootprints())
+        except Exception:
+            footprints = []
+
+        for fp in footprints:
+            try:
+                pos = fp.GetPosition()
+                try:
+                    bbox = fp.GetBoundingBox(False, False)
+                except TypeError:
+                    try:
+                        bbox = fp.GetBoundingBox(False)
+                    except TypeError:
+                        bbox = fp.GetBoundingBox()
+
+                components.append(
+                    {
+                        "ref": fp.GetReference(),
+                        "value": fp.GetValue(),
+                        "footprint": AIPCBFrame._get_footprint_name(fp),
+                        "x": pcbnew.ToMM(pos.x),
+                        "y": pcbnew.ToMM(pos.y),
+                        "rotation": AIPCBFrame._get_orientation_degrees(fp),
+                        "layer": "top" if fp.GetLayer() == pcbnew.F_Cu else "bottom",
+                        "width": pcbnew.ToMM(bbox.GetWidth()),
+                        "height": pcbnew.ToMM(bbox.GetHeight()),
+                        "fixed": bool(fp.IsLocked()),
+                        "power_dissipation": 0.0,
+                    }
+                )
+            except Exception:
+                continue
+
+        try:
+            nets_map = self.board.GetNetInfo().NetsByName()
+            for net_name, net in nets_map.items():
+                try:
+                    if net.GetNetCode() == 0:
+                        continue
+                    pins = []
+                    for pad in net.GetPads():
+                        try:
+                            pins.append({"ref": pad.GetParent().GetReference(), "pin": str(pad.GetNumber())})
+                        except Exception:
+                            pass
+                    if len(pins) >= 2:
+                        connections.append(
+                            {
+                                "net": str(net_name),
+                                "net_type": self._classify_net(str(net_name)),
+                                "pins": pins,
+                            }
+                        )
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        if board_width <= 0:
+            board_width = 100.0
+        if board_height <= 0:
+            board_height = 80.0
+
+        return {
+            "components": components,
+            "connections": connections,
+            "constraints": [],
+            "board_width": board_width,
+            "board_height": board_height,
+        }
+
+    def _apply_positions(self, result: Dict[str, Any]) -> int:
+        positions = result.get("positions", {}) if isinstance(result, dict) else {}
+        moved = 0
+        if not positions:
+            return moved
+        for fp in self.board.GetFootprints():
+            ref = fp.GetReference()
+            pos = positions.get(ref)
+            if not pos:
+                continue
+            try:
+                fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(pos["x"]), pcbnew.FromMM(pos["y"])))
+                if "rotation" in pos:
+                    try:
+                        fp.SetOrientationDegrees(pos["rotation"])
+                    except Exception:
+                        pass
+                moved += 1
+            except Exception:
+                continue
+        if moved:
+            try:
+                pcbnew.Refresh()
+            except Exception:
+                pass
+        return moved
+
+    def _on_board_summary(self, event):
+        data = self._collect_board_data()
+        text = (
+            f"Board size: {data['board_width']:.1f} mm x {data['board_height']:.1f} mm\n"
+            f"Footprints: {len(data['components'])}\n"
+            f"Nets: {len(data['connections'])}\n\n"
+            "This dashboard now uses direct board snapshots to avoid KiCad crashes "
+            "from the older heavy frame path."
+        )
+        self._set_status("Board snapshot captured.", (0, 210, 110))
+        self._show_text("Board Summary", text)
 
     def _on_netlist(self, event):
         prompt = self._prompt_dialog(
@@ -1476,13 +1605,21 @@ class AIDashboardDialog(wx.Frame):
     def _on_placement(self, event):
         self._set_status("Running placement optimization...", (255, 210, 90))
         try:
-            frame = self.plugin._show_frame(self.board)
-            frame._extract_board_data()
-            data = frame._get_board_data_dict()
+            data = self._collect_board_data()
+            if not data["components"]:
+                raise RuntimeError("No footprints found on the current board.")
             data["thermal_aware"] = CONFIG.thermal_aware
             result = self._post_json("/placement/optimize?algorithm=auto", data)
-            frame._apply_placement_result(result)
+            moved = self._apply_positions(result)
+            metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
+            summary = (
+                f"Moved footprints: {moved}\n"
+                f"Wirelength: {metrics.get('wirelength', 0):.1f} mm\n"
+                f"Thermal score: {metrics.get('thermal_score', 0):.1f}\n"
+                f"Density: {metrics.get('density_score', 0):.1f}%"
+            )
             self._set_status("Placement optimization complete.", (0, 210, 110))
+            self._show_text("AI Component Placement", summary)
         except Exception as exc:
             self._set_status("Placement failed.", (255, 120, 120))
             self._show_text("Error", str(exc))
@@ -1496,10 +1633,10 @@ class AIDashboardDialog(wx.Frame):
     def _run_board_check(self, path: str, title: str):
         self._set_status(f"Running {title.lower()}...", (255, 210, 90))
         try:
-            # Fix: Ensure frame is shown, not just instantiated, to prevent Mac OpenGL crashes
-            frame = self.plugin._show_frame(self.board)
-            frame._extract_board_data()
-            result = self._post_json(path, frame._get_board_data_dict())
+            data = self._collect_board_data()
+            if not data["components"]:
+                raise RuntimeError("No footprints found on the current board.")
+            result = self._post_json(path, data)
             violations = result if isinstance(result, list) else result.get("violations", [])
             if not violations:
                 text = "No issues found."

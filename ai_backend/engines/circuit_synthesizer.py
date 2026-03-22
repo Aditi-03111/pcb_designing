@@ -27,6 +27,9 @@ def synthesize_circuit(
 ) -> Optional[Dict[str, Any]]:
     """Generate a deterministic circuit graph from a parsed prompt."""
     intent = parse_prompt(prompt, constraints)
+    if _should_defer_to_llm(intent, constraints):
+        return None
+
     builder = CircuitBuilder()
 
     input_net = _input_net(intent)
@@ -155,3 +158,46 @@ def _output_voltage_label(intent: DesignIntent) -> str:
     if intent.output_voltage is None:
         return "3.3V"
     return f"{intent.output_voltage:g}V"
+
+
+def _should_defer_to_llm(intent: DesignIntent, constraints: Optional[Dict[str, Any]] = None) -> bool:
+    forced_mode = str((constraints or {}).get("generation_mode", "")).lower()
+    if forced_mode in {"llm", "llm_only"}:
+        return True
+
+    prompt = intent.normalized_prompt
+    advanced_patterns = (
+        "h-bridge",
+        "h bridge",
+        "full bridge",
+        "half bridge",
+        "high side",
+        "low side driver",
+        "forward reverse",
+        "bidirectional",
+        "gate driver",
+        "current sense",
+        "current sensing",
+        "bms",
+        "charger",
+        "buck boost",
+        "buck-boost",
+        "usb pd",
+        "usb-c",
+        "rs485",
+        "can bus",
+        "inverter",
+    )
+    if any(pattern in prompt for pattern in advanced_patterns):
+        return True
+
+    if intent.wants_hbridge:
+        return True
+
+    if ("motor" in prompt and "mosfet" in prompt and ("4 mosfet" in prompt or "four mosfet" in prompt)):
+        return True
+
+    if len(intent.families) >= 4 and ("motor" in prompt or "analog" in prompt):
+        return True
+
+    return False

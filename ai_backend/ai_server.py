@@ -322,6 +322,7 @@ class GenerateRequest(BaseModel):
     prompt:      str  = Field(..., min_length=1, max_length=5000)
     constraints: Optional[Dict[str, Any]] = None
     priority:    Literal["speed", "quality", "compact"] = "quality"
+    generation_mode: Literal["auto", "template_only", "synth_only", "llm_only"] = "auto"
 
 
 class GenerateResponse(BaseModel):
@@ -1220,6 +1221,33 @@ async def health_check() -> HealthResponse:
     )
 
 
+def _is_llm_preferred_prompt(prompt_lower: str) -> bool:
+    advanced_tokens = (
+        "h-bridge",
+        "h bridge",
+        "full bridge",
+        "half bridge",
+        "high side",
+        "bidirectional",
+        "forward reverse",
+        "gate driver",
+        "current sense",
+        "current sensing",
+        "4 mosfet",
+        "four mosfet",
+        "bms",
+        "charger",
+        "buck boost",
+        "buck-boost",
+        "usb pd",
+        "usb-c",
+        "inverter",
+        "rs485",
+        "can bus",
+    )
+    return any(token in prompt_lower for token in advanced_tokens)
+
+
 @app.post("/generate", response_model=GenerateResponse, tags=["generation"])
 async def generate_circuit(
     request: GenerateRequest, background_tasks: BackgroundTasks
@@ -1253,36 +1281,67 @@ async def generate_circuit(
     generation_mode = "template"
     intent_data: Optional[Dict[str, Any]] = None
 
-    complex_prompt = any(token in prompt_lower for token in ("microcontroller", "mcu", "sensor", "fan", "motor", "analog", "buffer"))
-    strong_template_match = bool(best_name and best_name in _state.template_cache and best_score >= 90 and not complex_prompt)
+    request_mode = request.generation_mode
+    constraint_mode = str((request.constraints or {}).get("generation_mode", "")).lower()
+    llm_only = request_mode == "llm_only" or constraint_mode in ("llm", "llm_only")
+    synth_only = request_mode == "synth_only"
+    template_only = request_mode == "template_only"
 
-    if strong_template_match:
-        circuit_data = _state.template_cache[best_name]
-        template_used = best_name
+    llm_preferred_prompt = _is_llm_preferred_prompt(prompt_lower)
+    complex_prompt = llm_preferred_prompt or any(
+        token in prompt_lower
+        for token in ("microcontroller", "mcu", "sensor", "fan", "motor", "analog", "buffer")
+    )
+    strong_template_match = bool(
+        best_name and best_name in _state.template_cache and best_score >= 90 and not complex_prompt and not llm_only and not synth_only
+    )
+
+    if llm_only:
+        if _state.llm:
+            try:
+                circuit_data = await _state.llm.generate_circuit_json(request.prompt) or None
+                generation_mode = "llm"
+            except Exception as exc:
+                warnings.append(f"LLM generation failed: {exc}")
+        else:
+            warnings.append("LLM-only mode requested but no LLM is loaded.")
     else:
-        try:
-            synthesized = synthesize_circuit(request.prompt, request.constraints)
-        except Exception as exc:
-            synthesized = None
-            warnings.append(f"Synthesis stage failed: {exc}")
+        if llm_preferred_prompt and _state.llm and not template_only and not synth_only:
+            try:
+                circuit_data = await _state.llm.generate_circuit_json(request.prompt) or None
+                generation_mode = "llm"
+                if circuit_data:
+                    warnings.append("Advanced prompt detected; LLM mode was preferred over templates and synthesis.")
+            except Exception as exc:
+                warnings.append(f"LLM-first generation failed: {exc}")
 
-        if synthesized and synthesized.get("components") and synthesized.get("connections"):
-            circuit_data = synthesized
-            intent_data = synthesized.get("metadata", {}).get("intent")
-            template_used = f"synth:{(intent_data or {}).get('primary_family', 'custom')}"
-            generation_mode = "synthesized"
-            if best_name and best_name in _state.template_cache:
-                warnings.append(f"Template '{best_name}' matched, but synthesized mode was preferred for broader prompt coverage.")
-        elif best_name and best_name in _state.template_cache:
+        if circuit_data is None and strong_template_match:
             circuit_data = _state.template_cache[best_name]
             template_used = best_name
             generation_mode = "template"
-        elif _state.llm:
+
+        if circuit_data is None and not template_only:
             try:
-                # generate_circuit_json is async — must be awaited.  Without the
-                # await it returns a coroutine object (truthy) so circuit_data would
-                # be set to a coroutine instead of a dict, silently bypassing the
-                # template fallback and failing JSON serialisation later.
+                synthesized = synthesize_circuit(request.prompt, request.constraints)
+            except Exception as exc:
+                synthesized = None
+                warnings.append(f"Synthesis stage failed: {exc}")
+
+            if synthesized and synthesized.get("components") and synthesized.get("connections"):
+                circuit_data = synthesized
+                intent_data = synthesized.get("metadata", {}).get("intent")
+                template_used = f"synth:{(intent_data or {}).get('primary_family', 'custom')}"
+                generation_mode = "synthesized"
+                if best_name and best_name in _state.template_cache:
+                    warnings.append(f"Template '{best_name}' matched, but synthesized mode was preferred for broader prompt coverage.")
+
+        if circuit_data is None and best_name and best_name in _state.template_cache and not synth_only:
+            circuit_data = _state.template_cache[best_name]
+            template_used = best_name
+            generation_mode = "template"
+
+        if circuit_data is None and _state.llm and not template_only:
+            try:
                 circuit_data = await _state.llm.generate_circuit_json(request.prompt) or None
                 generation_mode = "llm"
             except Exception as exc:

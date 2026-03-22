@@ -12,8 +12,7 @@ _FAMILY_KEYWORDS = {
     "mcu": ["mcu", "microcontroller", "atmega", "attiny", "stm32", "esp32", "arduino"],
     "sensor": ["sensor", "thermistor", "ldr", "photoresistor", "probe", "analog input"],
     "led": ["led", "indicator", "status light", "blinker"],
-    "switch": ["mosfet", "transistor switch", "switch", "relay driver", "fan driver", "load driver", "motor driver"],
-    "hbridge": ["h-bridge", "h bridge", "full bridge", "half bridge", "bidirectional motor", "forward reverse", "high side driver"],
+    "switch": ["mosfet", "transistor switch", "switch", "relay driver", "fan driver", "load driver"],
     "opamp": ["opamp", "op-amp", "buffer", "voltage follower", "amplifier"],
     "divider": ["divider", "voltage divider", "resistor divider"],
     "filter": ["filter", "rc filter", "low pass", "high pass"],
@@ -58,10 +57,6 @@ class DesignIntent:
         return "switch" in self.families
 
     @property
-    def wants_hbridge(self) -> bool:
-        return "hbridge" in self.families
-
-    @property
     def wants_opamp(self) -> bool:
         return "opamp" in self.families
 
@@ -104,8 +99,6 @@ def parse_prompt(prompt: str, constraints: Optional[Dict[str, Any]] = None) -> D
     primary_family = families[0] if families else "custom"
     if "timer" in families:
         primary_family = "timer"
-    elif "hbridge" in families:
-        primary_family = "hbridge"
     elif "switch" in families:
         primary_family = "switch"
     elif "mcu" in families:

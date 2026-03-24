@@ -32,10 +32,15 @@ def synthesize_circuit(
     input_net = _input_net(intent)
     main_supply = _main_supply_net(intent)
     description = intent.title
+    simple_led_circuit = _is_simple_led_circuit(intent)
 
-    add_power_input(builder, net=input_net, label="Primary power input")
+    add_power_input(builder, net=input_net, label="Battery input" if simple_led_circuit else "Primary power input")
 
     synthesized = False
+
+    if simple_led_circuit:
+        add_led_indicator(builder, input_net=input_net, label="Indicator LED")
+        synthesized = True
 
     if intent.wants_regulator:
         add_linear_regulator(
@@ -96,7 +101,7 @@ def synthesize_circuit(
         add_output_header(builder, signal_net="FILTER_OUT", label="Filtered output")
         synthesized = True
 
-    if intent.wants_led and not any(family in intent.families for family in ("timer", "mcu")):
+    if intent.wants_led and not simple_led_circuit and not any(family in intent.families for family in ("timer", "mcu")):
         add_led_indicator(builder, input_net=supply_for_logic, label="Power/status LED")
         synthesized = True
 
@@ -112,7 +117,8 @@ def synthesize_circuit(
         add_led_indicator(builder, input_net="NODE_B", label="Generic activity LED")
         add_output_header(builder, signal_net="NODE_B", label="Signal output")
 
-    add_decoupling_cap(builder, power_net=supply_for_logic, gnd_net="GND")
+    if not simple_led_circuit:
+        add_decoupling_cap(builder, power_net=supply_for_logic, gnd_net="GND")
 
     return builder.build(
         description=description,
@@ -127,6 +133,8 @@ def synthesize_circuit(
 def _input_net(intent: DesignIntent) -> str:
     voltage = intent.supply_voltage
     if voltage is None:
+        if "battery_powered" in intent.notes:
+            return "VBAT"
         return "VCC"
     if abs(voltage - 12.0) < 0.2:
         return "12V"
@@ -155,3 +163,11 @@ def _output_voltage_label(intent: DesignIntent) -> str:
     if intent.output_voltage is None:
         return "3.3V"
     return f"{intent.output_voltage:g}V"
+
+
+def _is_simple_led_circuit(intent: DesignIntent) -> bool:
+    prompt = intent.normalized_prompt
+    return (
+        intent.families == ["led"]
+        and ("battery" in prompt or "resistor" in prompt or "current-limiting" in prompt or "current limiting" in prompt)
+    )

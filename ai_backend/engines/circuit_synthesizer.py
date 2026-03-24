@@ -33,8 +33,12 @@ def synthesize_circuit(
     main_supply = _main_supply_net(intent)
     description = intent.title
     simple_led_circuit = _is_simple_led_circuit(intent)
+    simple_passive_signal_circuit = _is_simple_passive_signal_circuit(intent)
 
-    add_power_input(builder, net=input_net, label="Battery input" if simple_led_circuit else "Primary power input")
+    if simple_led_circuit:
+        add_power_input(builder, net=input_net, label="Battery input")
+    elif not simple_passive_signal_circuit:
+        add_power_input(builder, net=input_net, label="Primary power input")
 
     synthesized = False
 
@@ -90,14 +94,28 @@ def synthesize_circuit(
         synthesized = True
 
     if intent.wants_divider:
-        add_output_header(builder, signal_net=input_net, label="Divider input")
-        add_voltage_divider(builder, input_net=input_net, output_net="DIV_OUT")
-        add_output_header(builder, signal_net="DIV_OUT", label="Divider output")
+        divider_input_net = "VIN" if simple_passive_signal_circuit else input_net
+        add_output_header(
+            builder,
+            signal_net=divider_input_net,
+            label="Input header" if simple_passive_signal_circuit else "Divider input",
+        )
+        add_voltage_divider(builder, input_net=divider_input_net, output_net="DIV_OUT")
+        add_output_header(
+            builder,
+            signal_net="DIV_OUT",
+            label="Output header" if simple_passive_signal_circuit else "Divider output",
+        )
         synthesized = True
 
     if intent.wants_filter:
-        add_output_header(builder, signal_net=input_net, label="Filter input")
-        add_rc_lowpass(builder, input_net=input_net, output_net="FILTER_OUT")
+        filter_input_net = "VIN" if simple_passive_signal_circuit else input_net
+        add_output_header(
+            builder,
+            signal_net=filter_input_net,
+            label="Input header" if simple_passive_signal_circuit else "Filter input",
+        )
+        add_rc_lowpass(builder, input_net=filter_input_net, output_net="FILTER_OUT")
         add_output_header(builder, signal_net="FILTER_OUT", label="Filtered output")
         synthesized = True
 
@@ -117,7 +135,7 @@ def synthesize_circuit(
         add_led_indicator(builder, input_net="NODE_B", label="Generic activity LED")
         add_output_header(builder, signal_net="NODE_B", label="Signal output")
 
-    if not simple_led_circuit:
+    if _needs_decoupling(intent):
         add_decoupling_cap(builder, power_net=supply_for_logic, gnd_net="GND")
 
     return builder.build(
@@ -170,4 +188,23 @@ def _is_simple_led_circuit(intent: DesignIntent) -> bool:
     return (
         intent.families == ["led"]
         and ("battery" in prompt or "resistor" in prompt or "current-limiting" in prompt or "current limiting" in prompt)
+    )
+
+
+def _is_simple_passive_signal_circuit(intent: DesignIntent) -> bool:
+    families = set(intent.families)
+    if not families:
+        return False
+    return families.issubset({"divider", "filter"})
+
+
+def _needs_decoupling(intent: DesignIntent) -> bool:
+    return any(
+        (
+            intent.wants_regulator,
+            intent.wants_mcu,
+            intent.wants_timer,
+            intent.wants_opamp,
+            intent.wants_switch,
+        )
     )

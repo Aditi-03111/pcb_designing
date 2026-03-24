@@ -795,9 +795,15 @@ class KiCadSchematicWriter:
         if not comps:
             return
 
-        # Special-case tiny series circuits so they render as a readable chain.
+        # Special-case tiny passive circuits so they render as readable schematics.
         if self._is_simple_series_led(circuit):
             self._place_simple_series_led(circuit)
+            return
+        if self._is_simple_divider(circuit):
+            self._place_simple_divider(circuit)
+            return
+        if self._is_simple_rc_filter(circuit):
+            self._place_simple_rc_filter(circuit)
             return
 
         # ── 1. Classify ────────────────────────────────────────────────────
@@ -970,17 +976,83 @@ class KiCadSchematicWriter:
 
         y = DEFAULT_Y_START + 35.56
 
-        connector.x = DEFAULT_X_START + 10.16
-        connector.y = y - 12.70
-        connector.rotation = 90
+        connector.x = DEFAULT_X_START + 20.32
+        connector.y = y
+        connector.rotation = 180
 
-        resistor.x = DEFAULT_X_START + 45.72
+        resistor.x = DEFAULT_X_START + 55.88
         resistor.y = y
         resistor.rotation = 90
 
         diode.x = DEFAULT_X_START + 83.82
         diode.y = y
         diode.rotation = 0
+
+
+    def _is_simple_divider(self, circuit: CircuitData) -> bool:
+        classes = sorted(self._comp_class(comp.ref) for comp in circuit.components)
+        return classes == ["connector", "connector", "resistor", "resistor"]
+
+    def _place_simple_divider(self, circuit: CircuitData) -> None:
+        connectors = sorted((c for c in circuit.components if self._comp_class(c.ref) == "connector"), key=lambda c: c.ref)
+        resistors = sorted((c for c in circuit.components if self._comp_class(c.ref) == "resistor"), key=lambda c: c.ref)
+        if len(connectors) != 2 or len(resistors) != 2:
+            return
+
+        input_header, output_header = connectors
+        top_resistor, bottom_resistor = resistors
+
+        mid_x = DEFAULT_X_START + 71.12
+        top_y = DEFAULT_Y_START + 20.32
+        mid_y = DEFAULT_Y_START + 35.56
+        bottom_y = DEFAULT_Y_START + 50.80
+
+        input_header.x = DEFAULT_X_START + 20.32
+        input_header.y = mid_y
+        input_header.rotation = 180
+
+        output_header.x = DEFAULT_X_START + 111.76
+        output_header.y = mid_y
+        output_header.rotation = 0
+
+        top_resistor.x = mid_x
+        top_resistor.y = top_y
+        top_resistor.rotation = 0
+
+        bottom_resistor.x = mid_x
+        bottom_resistor.y = bottom_y
+        bottom_resistor.rotation = 0
+
+    def _is_simple_rc_filter(self, circuit: CircuitData) -> bool:
+        classes = sorted(self._comp_class(comp.ref) for comp in circuit.components)
+        return classes == ["capacitor", "connector", "connector", "resistor"]
+
+    def _place_simple_rc_filter(self, circuit: CircuitData) -> None:
+        connectors = sorted((c for c in circuit.components if self._comp_class(c.ref) == "connector"), key=lambda c: c.ref)
+        resistor = next((c for c in circuit.components if self._comp_class(c.ref) == "resistor"), None)
+        capacitor = next((c for c in circuit.components if self._comp_class(c.ref) == "capacitor"), None)
+        if len(connectors) != 2 or resistor is None or capacitor is None:
+            return
+
+        input_header, output_header = connectors
+        y = DEFAULT_Y_START + 35.56
+        node_x = DEFAULT_X_START + 96.52
+
+        input_header.x = DEFAULT_X_START + 20.32
+        input_header.y = y
+        input_header.rotation = 180
+
+        resistor.x = DEFAULT_X_START + 60.96
+        resistor.y = y
+        resistor.rotation = 90
+
+        output_header.x = DEFAULT_X_START + 132.08
+        output_header.y = y
+        output_header.rotation = 0
+
+        capacitor.x = node_x
+        capacitor.y = y + 20.32
+        capacitor.rotation = 0
 
     def _detect_power_nets(self, connections: list[Connection]) -> set[str]:
         """Identify power nets (VCC, GND, +5V, +3V3, etc.)."""
@@ -1128,7 +1200,8 @@ class KiCadSchematicWriter:
                 lines.append(f'    (uuid {_quote(sym_uuid)})')
                 lines.append(f'    (property "Reference" {_quote(f"#PWR0{self._pwr_counter:02d}")} {_at(px, py, 0)}')
                 lines.append(f'      {_effects(REF_FONT_SIZE, hide=True)})')
-                lines.append(f'    (property "Value" {_quote(conn.net)} {_at(px, py, 0)}')
+                label_y = py + 3.81 if conn.net.upper() in ("GND", "VSS", "AGND", "DGND") else py - 3.81
+                lines.append(f'    (property "Value" {_quote(conn.net)} {_at(px + 2.54, label_y, 0)}')
                 lines.append(f'      {_effects(VALUE_FONT_SIZE)})')
                 lines.append(f'    (pin "1" (uuid {_quote(_uuid())}))')
                 lines.append(f'  )')

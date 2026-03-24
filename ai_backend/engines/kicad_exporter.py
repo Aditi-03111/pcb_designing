@@ -795,6 +795,11 @@ class KiCadSchematicWriter:
         if not comps:
             return
 
+        # Special-case tiny series circuits so they render as a readable chain.
+        if self._is_simple_series_led(circuit):
+            self._place_simple_series_led(circuit)
+            return
+
         # ── 1. Classify ────────────────────────────────────────────────────
         ics          = [c for c in comps if self._comp_class(c.ref) == "ic"]
         transistors  = [c for c in comps if self._comp_class(c.ref) == "transistor"]
@@ -946,9 +951,36 @@ class KiCadSchematicWriter:
                 bcap.y = bypass_y
                 bcap.rotation = 0  # vertical: pin1 top (VCC), pin2 bottom (GND)
 
-    # -------------------------------------------------------------------------
-    # Power Net Detection
-    # -------------------------------------------------------------------------
+    def _is_simple_series_led(self, circuit: CircuitData) -> bool:
+        """Detect a minimal battery/resistor/LED style circuit."""
+        if len(circuit.components) != 3:
+            return False
+
+        classes = {self._comp_class(comp.ref) for comp in circuit.components}
+        return classes == {"connector", "resistor", "diode"}
+
+    def _place_simple_series_led(self, circuit: CircuitData) -> None:
+        """Render a tiny LED circuit as a clean readable series chain."""
+        by_class = {self._comp_class(comp.ref): comp for comp in circuit.components}
+        connector = by_class.get("connector")
+        resistor = by_class.get("resistor")
+        diode = by_class.get("diode")
+        if not connector or not resistor or not diode:
+            return
+
+        y = DEFAULT_Y_START + 35.56
+
+        connector.x = DEFAULT_X_START + 10.16
+        connector.y = y - 12.70
+        connector.rotation = 90
+
+        resistor.x = DEFAULT_X_START + 45.72
+        resistor.y = y
+        resistor.rotation = 90
+
+        diode.x = DEFAULT_X_START + 83.82
+        diode.y = y
+        diode.rotation = 0
 
     def _detect_power_nets(self, connections: list[Connection]) -> set[str]:
         """Identify power nets (VCC, GND, +5V, +3V3, etc.)."""

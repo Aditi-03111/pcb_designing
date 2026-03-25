@@ -1281,72 +1281,220 @@ class AIDashboardDialog(wx.Frame):
     """Dashboard-first launcher styled after the prototype plugin UI."""
 
     def __init__(self, parent, plugin: AIPlacementPlugin, board: pcbnew.BOARD):
-        super().__init__(parent, title="AI KiCad Plugin", size=(460, 840), style=wx.DEFAULT_FRAME_STYLE | wx.STAY_ON_TOP)
+        super().__init__(parent, title="AI KiCad Plugin", size=(560, 900), style=wx.DEFAULT_FRAME_STYLE | wx.STAY_ON_TOP)
         self.plugin = plugin
         self.board = board
-        self.SetBackgroundColour(wx.Colour(26, 26, 30))
+        self.SetBackgroundColour(wx.Colour(16, 20, 28))
         self._init_ui()
         self._refresh_health()
 
     def _init_ui(self):
-        panel = wx.Panel(self)
-        panel.SetBackgroundColour(wx.Colour(26, 26, 30))
-        vbox = wx.BoxSizer(wx.VERTICAL)
+        root = wx.Panel(self)
+        root.SetBackgroundColour(wx.Colour(16, 20, 28))
+        outer = wx.BoxSizer(wx.VERTICAL)
 
-        title = wx.StaticText(panel, label="AI-Powered KiCad Plugin")
-        title.SetForegroundColour(wx.Colour(0, 210, 255))
-        title.SetFont(wx.Font(16, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-        vbox.Add(title, 0, wx.ALIGN_CENTER | wx.TOP, 22)
+        scroll = wx.ScrolledWindow(root, style=wx.VSCROLL)
+        scroll.SetScrollRate(0, 16)
+        scroll.SetBackgroundColour(wx.Colour(16, 20, 28))
+        content = wx.BoxSizer(wx.VERTICAL)
 
-        subtitle = wx.StaticText(panel, label="Local AI • No Cloud • 100% Private")
-        subtitle.SetForegroundColour(wx.Colour(185, 185, 190))
-        subtitle.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
-        vbox.Add(subtitle, 0, wx.ALIGN_CENTER | wx.TOP, 4)
+        hero = wx.Panel(scroll)
+        hero.SetBackgroundColour(wx.Colour(24, 31, 43))
+        hero_box = wx.BoxSizer(wx.VERTICAL)
 
-        line = wx.StaticLine(panel)
-        vbox.Add(line, 0, wx.EXPAND | wx.ALL, 16)
+        eyebrow = wx.StaticText(hero, label="AI PCB ASSISTANT")
+        eyebrow.SetForegroundColour(wx.Colour(93, 196, 255))
+        eyebrow.SetFont(wx.Font(9, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+        hero_box.Add(eyebrow, 0, wx.LEFT | wx.RIGHT | wx.TOP, 20)
 
-        self.btn_generate = self._action_button(panel, "Auto Generate Schematic", wx.Colour(0, 120, 220))
-        self.btn_write = self._action_button(panel, "Write Components to PCB", wx.Colour(0, 180, 180))
-        self.btn_netlist = self._action_button(panel, "Generate Netlist", wx.Colour(40, 70, 220))
-        self.btn_place = self._action_button(panel, "AI Component Placement (RL)", wx.Colour(0, 165, 95))
-        self.btn_route = self._action_button(panel, "FreeRouting Autoroute", wx.Colour(0, 145, 155))
-        self.btn_sim = self._action_button(panel, "ngspice Integration", wx.Colour(120, 85, 200))
-        self.btn_mfg = self._action_button(panel, "Manufacturing Checks", wx.Colour(220, 125, 0))
-        self.btn_drc = self._action_button(panel, "Run DRC Check", wx.Colour(165, 45, 180))
-        self.btn_gerber = self._action_button(panel, "Export Gerber Files", wx.Colour(190, 55, 55))
+        title = wx.StaticText(hero, label="Modern KiCad workflow\nfrom prompt to fabrication.")
+        title.SetForegroundColour(wx.WHITE)
+        title.SetFont(wx.Font(18, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+        hero_box.Add(title, 0, wx.LEFT | wx.RIGHT | wx.TOP, 12)
 
-        for btn in (self.btn_generate, self.btn_write, self.btn_netlist, self.btn_place, self.btn_route, self.btn_sim, self.btn_mfg, self.btn_drc, self.btn_gerber):
-            vbox.Add(btn, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 16)
+        subtitle = wx.StaticText(
+            hero,
+            label="Generate circuits, inspect board state, validate manufacturability, autoroute, and export production files from one workspace.",
+        )
+        subtitle.SetForegroundColour(wx.Colour(166, 176, 191))
+        subtitle.SetFont(wx.Font(10, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+        subtitle.Wrap(470)
+        hero_box.Add(subtitle, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 12)
 
-        self.btn_generate.Bind(wx.EVT_BUTTON, self._on_generate)
-        self.btn_write.Bind(wx.EVT_BUTTON, self._on_write_components)
-        self.btn_netlist.Bind(wx.EVT_BUTTON, self._on_netlist)
-        self.btn_place.Bind(wx.EVT_BUTTON, self._on_placement)
-        self.btn_route.Bind(wx.EVT_BUTTON, self._on_freerouting)
-        self.btn_sim.Bind(wx.EVT_BUTTON, self._on_ngspice)
-        self.btn_mfg.Bind(wx.EVT_BUTTON, self._on_dfm)
-        self.btn_drc.Bind(wx.EVT_BUTTON, self._on_drc)
-        self.btn_gerber.Bind(wx.EVT_BUTTON, self._on_export_gerbers)
+        badges = wx.BoxSizer(wx.HORIZONTAL)
+        for text in ("Local-first", "KiCad-native", "Fabrication-ready"):
+            badge = wx.StaticText(hero, label=f"  {text}  ")
+            badge.SetForegroundColour(wx.Colour(214, 233, 255))
+            badge.SetBackgroundColour(wx.Colour(31, 53, 78))
+            badges.Add(badge, 0, wx.RIGHT, 8)
+        hero_box.Add(badges, 0, wx.LEFT | wx.RIGHT | wx.TOP | wx.BOTTOM, 20)
+        hero.SetSizer(hero_box)
+        content.Add(hero, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 18)
 
-        self.status = wx.StaticText(panel, label="Checking backend status...")
+        content.Add(self._section_label(scroll, "Design"), 0, wx.LEFT | wx.RIGHT | wx.TOP, 18)
+        self.btn_generate = self._action_button(
+            scroll,
+            "Auto Generate Schematic",
+            "Turn natural-language circuit requests into a KiCad schematic export.",
+            wx.Colour(44, 122, 255),
+        )
+        self.btn_write = self._action_button(
+            scroll,
+            "Write Components to PCB",
+            "Guide the schematic-to-PCB handoff and populate the current board workflow.",
+            wx.Colour(28, 181, 163),
+        )
+        self.btn_netlist = self._action_button(
+            scroll,
+            "Generate Netlist",
+            "Summarize connectivity and net structure from the active board.",
+            wx.Colour(83, 110, 255),
+        )
+        content.Add(self.btn_generate, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 12)
+        content.Add(self.btn_write, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 12)
+        content.Add(self.btn_netlist, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 12)
+
+        content.Add(self._section_label(scroll, "Board Intelligence"), 0, wx.LEFT | wx.RIGHT | wx.TOP, 20)
+        self.btn_place = self._action_button(
+            scroll,
+            "AI Component Placement (RL)",
+            "Optimize footprint locations using rule-based and RL-assisted placement heuristics.",
+            wx.Colour(33, 184, 112),
+        )
+        self.btn_route = self._action_button(
+            scroll,
+            "FreeRouting Autoroute",
+            "Export DSN, run FreeRouting, and import routed results back into KiCad.",
+            wx.Colour(27, 152, 171),
+        )
+        self.btn_sim = self._action_button(
+            scroll,
+            "ngspice Integration",
+            "Check simulation readiness and hand off to KiCad's native SPICE workflow.",
+            wx.Colour(117, 94, 220),
+        )
+        self.btn_mfg = self._action_button(
+            scroll,
+            "Manufacturing Checks",
+            "Review edge clearances, component placement risks, and DFM issues.",
+            wx.Colour(230, 140, 45),
+        )
+        self.btn_drc = self._action_button(
+            scroll,
+            "Run DRC Check",
+            "Run the current board through backend design-rule checks and placement warnings.",
+            wx.Colour(184, 74, 205),
+        )
+        for card in (self.btn_place, self.btn_route, self.btn_sim, self.btn_mfg, self.btn_drc):
+            content.Add(card, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 12)
+
+        content.Add(self._section_label(scroll, "Release"), 0, wx.LEFT | wx.RIGHT | wx.TOP, 20)
+        self.btn_gerber = self._action_button(
+            scroll,
+            "Export Gerber Files",
+            "Generate fabrication outputs for copper, mask, silkscreen, outline, and drills.",
+            wx.Colour(208, 72, 72),
+        )
+        content.Add(self.btn_gerber, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 12)
+
+        status_panel = wx.Panel(scroll)
+        status_panel.SetBackgroundColour(wx.Colour(24, 31, 43))
+        status_box = wx.BoxSizer(wx.VERTICAL)
+
+        status_label = wx.StaticText(status_panel, label="SYSTEM STATUS")
+        status_label.SetForegroundColour(wx.Colour(124, 138, 158))
+        status_label.SetFont(wx.Font(8, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+        status_box.Add(status_label, 0, wx.LEFT | wx.RIGHT | wx.TOP, 16)
+
+        self.status = wx.StaticText(status_panel, label="Checking backend status...")
         self.status.SetForegroundColour(wx.Colour(0, 210, 110))
-        self.status.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
-        vbox.Add(self.status, 0, wx.ALIGN_CENTER | wx.TOP, 18)
+        self.status.SetFont(wx.Font(11, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+        status_box.Add(self.status, 0, wx.LEFT | wx.RIGHT | wx.TOP, 8)
 
-        footer = wx.StaticText(panel, label="Powered by the updated AI PCB Assistant backend")
-        footer.SetForegroundColour(wx.Colour(120, 120, 130))
-        footer.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
-        vbox.Add(footer, 0, wx.ALIGN_CENTER | wx.TOP | wx.BOTTOM, 12)
+        self.status_meta = wx.StaticText(status_panel, label=f"Backend URL: {CONFIG.backend_url}")
+        self.status_meta.SetForegroundColour(wx.Colour(148, 158, 171))
+        self.status_meta.SetFont(wx.Font(9, wx.FONTFAMILY_TELETYPE, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+        status_box.Add(self.status_meta, 0, wx.LEFT | wx.RIGHT | wx.TOP, 6)
 
-        panel.SetSizer(vbox)
+        footer = wx.StaticText(status_panel, label="Powered by the updated AI PCB Assistant backend")
+        footer.SetForegroundColour(wx.Colour(120, 128, 141))
+        footer.SetFont(wx.Font(8, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
+        status_box.Add(footer, 0, wx.LEFT | wx.RIGHT | wx.TOP | wx.BOTTOM, 12)
+        status_panel.SetSizer(status_box)
+        content.Add(status_panel, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP | wx.BOTTOM, 18)
 
-    def _action_button(self, parent, label: str, color: wx.Colour) -> wx.Button:
-        btn = wx.Button(parent, label=label, size=(-1, 46))
-        btn.SetBackgroundColour(color)
-        btn.SetForegroundColour(wx.WHITE)
-        btn.SetFont(wx.Font(11, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-        return btn
+        scroll.SetSizer(content)
+        outer.Add(scroll, 1, wx.EXPAND)
+        root.SetSizer(outer)
+
+        self._bind_card(self.btn_generate, self._on_generate)
+        self._bind_card(self.btn_write, self._on_write_components)
+        self._bind_card(self.btn_netlist, self._on_netlist)
+        self._bind_card(self.btn_place, self._on_placement)
+        self._bind_card(self.btn_route, self._on_freerouting)
+        self._bind_card(self.btn_sim, self._on_ngspice)
+        self._bind_card(self.btn_mfg, self._on_dfm)
+        self._bind_card(self.btn_drc, self._on_drc)
+        self._bind_card(self.btn_gerber, self._on_export_gerbers)
+
+    def _section_label(self, parent, label: str) -> wx.StaticText:
+        text = wx.StaticText(parent, label=label.upper())
+        text.SetForegroundColour(wx.Colour(120, 134, 155))
+        text.SetFont(wx.Font(8, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+        return text
+
+    def _action_button(self, parent, title: str, subtitle: str, accent: wx.Colour) -> wx.Panel:
+        panel = wx.Panel(parent)
+        panel.SetBackgroundColour(wx.Colour(22, 28, 39))
+        panel.SetMinSize((-1, 92))
+        panel.SetCursor(wx.Cursor(wx.CURSOR_HAND))
+
+        layout = wx.BoxSizer(wx.HORIZONTAL)
+
+        accent_bar = wx.Panel(panel, size=(6, -1))
+        accent_bar.SetBackgroundColour(accent)
+        layout.Add(accent_bar, 0, wx.EXPAND)
+
+        body = wx.BoxSizer(wx.VERTICAL)
+        title_text = wx.StaticText(panel, label=title)
+        title_text.SetForegroundColour(wx.WHITE)
+        title_text.SetFont(wx.Font(12, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+        body.Add(title_text, 0, wx.LEFT | wx.RIGHT | wx.TOP, 14)
+
+        subtitle_text = wx.StaticText(panel, label=subtitle)
+        subtitle_text.SetForegroundColour(wx.Colour(150, 162, 178))
+        subtitle_text.SetFont(wx.Font(9, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+        subtitle_text.Wrap(430)
+        body.Add(subtitle_text, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP | wx.BOTTOM, 6)
+
+        layout.Add(body, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+
+        chevron = wx.StaticText(panel, label=">")
+        chevron.SetForegroundColour(wx.Colour(123, 136, 153))
+        chevron.SetFont(wx.Font(13, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+        layout.Add(chevron, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 16)
+
+        panel.SetSizer(layout)
+        return panel
+
+    def _bind_card(self, panel: wx.Panel, handler: Callable):
+        def on_enter(event):
+            panel.SetBackgroundColour(wx.Colour(28, 35, 48))
+            panel.Refresh()
+            event.Skip()
+
+        def on_leave(event):
+            panel.SetBackgroundColour(wx.Colour(22, 28, 39))
+            panel.Refresh()
+            event.Skip()
+
+        panel.Bind(wx.EVT_ENTER_WINDOW, on_enter)
+        panel.Bind(wx.EVT_LEAVE_WINDOW, on_leave)
+        panel.Bind(wx.EVT_LEFT_UP, handler)
+        for child in panel.GetChildren():
+            child.Bind(wx.EVT_LEFT_UP, handler)
+            child.Bind(wx.EVT_ENTER_WINDOW, on_enter)
+            child.Bind(wx.EVT_LEAVE_WINDOW, on_leave)
 
     def _refresh_health(self):
         try:
@@ -1354,14 +1502,18 @@ class AIDashboardDialog(wx.Frame):
             with urllib.request.urlopen(req, timeout=3) as resp:
                 data = json.loads(resp.read().decode())
             mode = "healthy" if data.get("llm_loaded") else "running"
-            self._set_status(f"Ready — FastAPI + backend {mode}", (0, 210, 110))
+            capabilities = ", ".join(data.get("capabilities", [])[:4]) or "core services online"
+            self._set_status(f"Ready - FastAPI + backend {mode}", (0, 210, 110))
+            self.status_meta.SetLabel(f"Backend URL: {CONFIG.backend_url}\nCapabilities: {capabilities}")
         except Exception as exc:
-            self._set_status(f"Backend unavailable — {exc}", (255, 120, 120))
+            self._set_status(f"Backend unavailable - {exc}", (255, 120, 120))
+            self.status_meta.SetLabel(f"Backend URL: {CONFIG.backend_url}\nCheck that the local AI backend is running.")
 
     def _set_status(self, message: str, color=(0, 210, 110)):
         self.status.SetLabel(message)
         self.status.SetForegroundColour(wx.Colour(*color))
         self.status.Refresh()
+        self.Layout()
 
     def _prompt_dialog(self, title: str, message: str, default: str) -> Optional[str]:
         dlg = wx.TextEntryDialog(self, message, title, default)

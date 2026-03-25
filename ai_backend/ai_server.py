@@ -44,6 +44,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from engines.circuit_synthesizer import synthesize_circuit
+from engines.prompt_parser import parse_prompt, DesignIntent
 
 # ── Optional heavy dependencies ───────────────────────────────────────────────
 
@@ -329,6 +330,7 @@ class GenerateResponse(BaseModel):
     circuit_data:     Optional[Dict[str, Any]] = None
     template_used:    Optional[str]  = None
     generation_mode:  str            = "llm"
+    support_status:   Literal["supported", "partial", "unsupported"] = "unsupported"
     intent:           Optional[Dict[str, Any]] = None
     generation_time_ms: float        = 0.0
     warnings:         List[str]      = Field(default_factory=list)
@@ -1220,6 +1222,51 @@ async def health_check() -> HealthResponse:
     )
 
 
+def _prompt_is_multi_block(intent: DesignIntent, prompt_lower: str) -> bool:
+    family_count = len(set(intent.families))
+    structural_tokens = (
+        "stage", "block", "plus", "with", "and", "connector", "header", "driver", "interface"
+    )
+    combo_families = {"timer", "switch", "regulator", "mcu", "sensor", "opamp", "filter", "divider"}
+    requested_combo_count = len(combo_families.intersection(intent.families))
+    return family_count >= 2 and (requested_combo_count >= 2 or any(token in prompt_lower for token in structural_tokens))
+
+
+def _component_prefixes(board: BoardData) -> Set[str]:
+    return {c.prefix for c in board.components if not c.is_power_symbol}
+
+
+def _assess_support_status(intent: DesignIntent, generation_mode: str, board: BoardData, warnings: List[str]) -> tuple[str, List[str]]:
+    support_status = "supported"
+    prefixes = _component_prefixes(board)
+    missing: List[str] = []
+
+    if intent.wants_timer and "U" not in prefixes:
+        missing.append("timer stage")
+    if intent.wants_switch and "Q" not in prefixes:
+        missing.append("switching stage")
+    if intent.wants_opamp and "U" not in prefixes:
+        missing.append("op-amp stage")
+    if intent.wants_regulator and not any(c.part.startswith(("AMS1117", "LM7805")) for c in board.components):
+        missing.append("regulator stage")
+    if intent.wants_divider and len([c for c in board.components if c.prefix == "R"]) < 2:
+        missing.append("divider resistors")
+    if intent.wants_filter and not ({"R", "C"} <= prefixes):
+        missing.append("RC filter stage")
+    if intent.wants_mcu and not any("atmega" in c.value.lower() or "mcu" in c.description.lower() for c in board.components):
+        missing.append("microcontroller block")
+
+    if generation_mode == "template" and _prompt_is_multi_block(intent, intent.normalized_prompt):
+        support_status = "partial"
+        warnings.append("Prompt requested multiple functional blocks, but template mode produced a narrower circuit.")
+
+    if missing:
+        support_status = "partial"
+        warnings.append("Generation is missing requested features: " + ", ".join(missing) + ".")
+
+    return support_status, warnings
+
+
 @app.post("/generate", response_model=GenerateResponse, tags=["generation"])
 async def generate_circuit(
     request: GenerateRequest, background_tasks: BackgroundTasks
@@ -1240,6 +1287,10 @@ async def generate_circuit(
     request_id = str(uuid.uuid4())[:8]
     warnings: List[str] = []
 
+    # Parse prompt up front so routing decisions can consider the requested architecture.
+    parsed_intent = parse_prompt(request.prompt, request.constraints)
+    intent_data: Optional[Dict[str, Any]] = parsed_intent.as_dict()
+
     # ── Step 1: template scoring ──────────────────────────────────────────────
     prompt_lower = request.prompt.lower()
     best_name, best_score = None, 0
@@ -1251,9 +1302,10 @@ async def generate_circuit(
     circuit_data: Optional[Dict[str, Any]] = None
     template_used: Optional[str] = None
     generation_mode = "template"
-    intent_data: Optional[Dict[str, Any]] = None
 
-    complex_prompt = any(token in prompt_lower for token in ("microcontroller", "mcu", "sensor", "fan", "motor", "analog", "buffer"))
+    complex_prompt = _prompt_is_multi_block(parsed_intent, prompt_lower) or any(
+        token in prompt_lower for token in ("microcontroller", "mcu", "sensor", "fan", "motor", "analog", "buffer", "driver board", "actuator")
+    )
     strong_template_match = bool(best_name and best_name in _state.template_cache and best_score >= 90 and not complex_prompt)
 
     if strong_template_match:
@@ -1268,7 +1320,7 @@ async def generate_circuit(
 
         if synthesized and synthesized.get("components") and synthesized.get("connections"):
             circuit_data = synthesized
-            intent_data = synthesized.get("metadata", {}).get("intent")
+            intent_data = synthesized.get("metadata", {}).get("intent") or intent_data
             template_used = f"synth:{(intent_data or {}).get('primary_family', 'custom')}"
             generation_mode = "synthesized"
             if best_name and best_name in _state.template_cache:
@@ -1291,6 +1343,8 @@ async def generate_circuit(
     if not circuit_data:
         return GenerateResponse(
             success=False,
+            support_status="unsupported",
+            intent=intent_data,
             error=(
                 "Generation failed across template, synthesized, and LLM paths. "
                 "Try a more explicit prompt with supply, input, output, and function details."
@@ -1310,6 +1364,8 @@ async def generate_circuit(
     except Exception as exc:
         return GenerateResponse(
             success=False,
+            support_status="unsupported",
+            intent=intent_data,
             error=f"Schema validation failed: {exc}",
             warnings=warnings,
             request_id=request_id,
@@ -1331,6 +1387,8 @@ async def generate_circuit(
     for v in dfm_violations:
         if v.severity in ("error", "critical"):
             warnings.append(f"[DFM {v.rule_id}] {v.message}")
+
+    support_status, warnings = _assess_support_status(parsed_intent, generation_mode, board, warnings)
 
     # ── Step 5: persist JSON ──────────────────────────────────────────────────
     json_path = OUTPUT_DIR / f"circuit_{request_id}.json"
@@ -1381,6 +1439,7 @@ async def generate_circuit(
         circuit_data=board_dict,
         template_used=template_used,
         generation_mode=generation_mode,
+        support_status=support_status,
         intent=intent_data,
         generation_time_ms=round((time.perf_counter() - t0) * 1000, 1),
         warnings=warnings,

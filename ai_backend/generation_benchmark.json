@@ -1,0 +1,68 @@
+{
+  "cases": [
+    {
+      "name": "simple_led_battery",
+      "prompt": "A simple LED circuit with a battery and a current-limiting resistor",
+      "priority": "quality",
+      "expected_generation_mode": "synthesized",
+      "expected_support_status": "supported"
+    },
+    {
+      "name": "simple_divider",
+      "prompt": "A simple voltage divider",
+      "priority": "quality",
+      "expected_generation_mode": "synthesized",
+      "expected_support_status": "supported"
+    },
+    {
+      "name": "simple_rc_filter",
+      "prompt": "A simple RC low pass filter",
+      "priority": "quality",
+      "expected_generation_mode": "synthesized",
+      "expected_support_status": "supported"
+    },
+    {
+      "name": "timer_switch_driver",
+      "prompt": "Build a 12V actuator driver board with a timer-based pulse generator, MOSFET low-side load switch, timer output header, status LED, and control/load connectors.",
+      "constraints": {
+        "goal": "modular timing plus switching blocks"
+      },
+      "priority": "quality",
+      "expected_generation_mode": "synthesized",
+      "expected_support_status": "supported"
+    },
+    {
+      "name": "sensor_buffer_board",
+      "prompt": "Design a 12V sensor conditioning board with a 3.3V regulator, analog input header, RC low-pass filter stage, op-amp buffer stage, buffered output header, and status LED.",
+      "constraints": {
+        "goal": "modular analog signal chain"
+      },
+      "priority": "quality",
+      "expected_generation_mode": "synthesized",
+      "expected_support_status": "supported"
+    },
+    {
+      "name": "fan_driver_board",
+      "prompt": "Build a 12V fan driver circuit with a regulated logic rail, MOSFET low-side switch, control header, flyback diode, load connector, and power/status LED.",
+      "constraints": {
+        "goal": "driver board for a small DC load"
+      },
+      "priority": "quality",
+      "expected_generation_mode": "synthesized",
+      "expected_support_status": "supported"
+    },
+    {
+      "name": "template_555_blinker",
+      "prompt": "555 timer astable LED blinker",
+      "priority": "quality",
+      "expected_generation_mode": "template",
+      "expected_support_status": "supported"
+    },
+    {
+      "name": "complex_hbridge_partial",
+      "prompt": "Design an H-bridge motor driver for a 12V brushed DC motor using four MOSFETs, gate drive support, flyback protection, and control headers.",
+      "priority": "quality",
+      "expected_support_status": "partial"
+    }
+  ]
+}

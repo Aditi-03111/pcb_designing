@@ -345,6 +345,119 @@ def add_opamp_buffer(
     return {"opamp": opamp}
 
 
+def add_comparator_stage(
+    builder: CircuitBuilder,
+    input_net: str = "SENSE_IN",
+    output_net: str = "CMP_OUT",
+    supply_net: str = "VCC",
+    gnd_net: str = "GND",
+) -> Dict[str, str]:
+    comparator = builder.add_component(
+        "U",
+        "Comparator",
+        "LM393",
+        "LM393",
+        "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm",
+        "Single-threshold comparator stage",
+        _pins(("1", "OUT"), ("2", "IN-"), ("3", "IN+"), ("4", "GND"), ("8", "VCC")),
+    )
+    pullup = builder.add_component(
+        "R",
+        "Device",
+        "R",
+        "10k",
+        "Resistor_SMD:R_0805_2012Metric",
+        "Comparator output pull-up resistor",
+        _pins(("1", "1"), ("2", "2")),
+    )
+    refs = add_voltage_divider(builder, input_net=supply_net, output_net="CMP_REF", gnd_net=gnd_net, top_value="47k", bottom_value="10k")
+    builder.connect(input_net, f"{comparator}.3")
+    builder.connect("CMP_REF", f"{comparator}.2")
+    builder.connect(output_net, f"{comparator}.1", f"{pullup}.2")
+    builder.connect(supply_net, f"{comparator}.8", f"{pullup}.1")
+    builder.connect(gnd_net, f"{comparator}.4")
+    add_decoupling_cap(builder, power_net=supply_net, gnd_net=gnd_net)
+    return {"comparator": comparator, "pullup": pullup, **refs}
+
+
+def add_relay_driver(
+    builder: CircuitBuilder,
+    control_net: str = "CTRL",
+    supply_net: str = "12V",
+    gnd_net: str = "GND",
+) -> Dict[str, str]:
+    relay = builder.add_component(
+        "K",
+        "Relay",
+        "Relay_SPDT",
+        "Relay",
+        "Relay_THT:Relay_SPDT_Songle_SRD_Series_Form_C",
+        "SPDT relay",
+        _pins(("1", "COIL_A"), ("2", "COIL_B"), ("3", "COM"), ("4", "NO"), ("5", "NC")),
+    )
+    mosfet = builder.add_component(
+        "Q",
+        "Device",
+        "Q_NMOS_DGS",
+        "AO3400A",
+        "Package_TO_SOT_SMD:SOT-23",
+        "Relay low-side driver MOSFET",
+        _pins(("1", "G"), ("2", "S"), ("3", "D")),
+    )
+    gate_res = builder.add_component(
+        "R",
+        "Device",
+        "R",
+        "100",
+        "Resistor_SMD:R_0805_2012Metric",
+        "Relay gate resistor",
+        _pins(("1", "1"), ("2", "2")),
+    )
+    pull_down = builder.add_component(
+        "R",
+        "Device",
+        "R",
+        "100k",
+        "Resistor_SMD:R_0805_2012Metric",
+        "Relay gate pull-down resistor",
+        _pins(("1", "1"), ("2", "2")),
+    )
+    flyback = builder.add_component(
+        "D",
+        "Device",
+        "D",
+        "1N4148",
+        "Diode_SMD:D_SOD-123",
+        "Relay flyback diode",
+        _pins(("1", "A"), ("2", "K")),
+    )
+    contact = builder.add_component(
+        "J",
+        "Connector_Generic",
+        "Conn_01x03",
+        "Relay contacts",
+        "Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical",
+        "Relay contact header",
+        _pins(("1", "COM"), ("2", "NO"), ("3", "NC")),
+    )
+    builder.connect(control_net, f"{gate_res}.1")
+    builder.connect("RELAY_GATE", f"{gate_res}.2", f"{mosfet}.1", f"{pull_down}.1")
+    builder.connect(gnd_net, f"{mosfet}.2", f"{pull_down}.2")
+    builder.connect(supply_net, f"{relay}.1", f"{flyback}.2")
+    builder.connect("RELAY_COIL_RETURN", f"{relay}.2", f"{mosfet}.3", f"{flyback}.1")
+    builder.connect("COM", f"{relay}.3", f"{contact}.1")
+    builder.connect("NO", f"{relay}.4", f"{contact}.2")
+    builder.connect("NC", f"{relay}.5", f"{contact}.3")
+    return {
+        "relay": relay,
+        "mosfet": mosfet,
+        "gate_resistor": gate_res,
+        "pulldown": pull_down,
+        "flyback": flyback,
+        "contact_header": contact,
+    }
+
+
 def add_555_timer(
     builder: CircuitBuilder,
     supply_net: str = "VCC",

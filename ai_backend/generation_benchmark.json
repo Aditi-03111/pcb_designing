@@ -63,6 +63,20 @@
       "prompt": "Design an H-bridge motor driver for a 12V brushed DC motor using four MOSFETs, gate drive support, flyback protection, and control headers.",
       "priority": "quality",
       "expected_support_status": "partial"
+    },
+    {
+      "name": "relay_driver_board",
+      "prompt": "Design a 12V relay driver board with control input, flyback diode, SPDT relay, and relay contact header.",
+      "priority": "quality",
+      "expected_generation_mode": "synthesized",
+      "expected_support_status": "supported"
+    },
+    {
+      "name": "comparator_threshold_board",
+      "prompt": "Create a comparator threshold detector with 5V supply, sensor input, reference divider, and comparator output header.",
+      "priority": "quality",
+      "expected_generation_mode": "synthesized",
+      "expected_support_status": "supported"
     }
   ]
 }

@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 from .block_library import (
     CircuitBuilder,
     add_555_timer,
+    add_comparator_stage,
     add_decoupling_cap,
     add_led_indicator,
     add_linear_regulator,
@@ -16,6 +17,7 @@ from .block_library import (
     add_output_header,
     add_power_input,
     add_rc_lowpass,
+    add_relay_driver,
     add_voltage_divider,
 )
 from .prompt_parser import DesignIntent, parse_prompt
@@ -93,7 +95,20 @@ def synthesize_circuit(
         add_output_header(builder, signal_net="BUFFER_OUT", label="Buffered output")
         synthesized = True
 
-    if intent.wants_divider:
+    if intent.wants_comparator:
+        add_output_header(builder, signal_net="SENSE_IN", label="Comparator input")
+        add_comparator_stage(builder, input_net="SENSE_IN", output_net="CMP_OUT", supply_net=supply_for_logic)
+        add_output_header(builder, signal_net="CMP_OUT", label="Comparator output")
+        synthesized = True
+
+    if intent.wants_relay:
+        control_net = "GPIO_OUT" if intent.wants_mcu else "RELAY_CTRL"
+        if not intent.wants_mcu:
+            add_output_header(builder, signal_net=control_net, label="Relay control input")
+        add_relay_driver(builder, control_net=control_net, supply_net=("12V" if (intent.supply_voltage or 0) >= 9 else supply_for_logic))
+        synthesized = True
+
+    if intent.wants_divider and not intent.wants_comparator:
         divider_input_net = "VIN" if simple_passive_signal_circuit else input_net
         add_output_header(
             builder,
@@ -123,7 +138,7 @@ def synthesize_circuit(
         add_led_indicator(builder, input_net=supply_for_logic, label="Power/status LED")
         synthesized = True
 
-    if intent.wants_sensor and not intent.wants_mcu and not intent.wants_opamp:
+    if intent.wants_sensor and not intent.wants_mcu and not intent.wants_opamp and not intent.wants_comparator:
         add_output_header(builder, signal_net="SENSOR_SIG", label="Sensor signal")
         add_rc_lowpass(builder, input_net="SENSOR_SIG", output_net="FILTER_OUT")
         add_output_header(builder, signal_net="FILTER_OUT", label="Filtered sensor output")
@@ -205,6 +220,8 @@ def _needs_decoupling(intent: DesignIntent) -> bool:
             intent.wants_mcu,
             intent.wants_timer,
             intent.wants_opamp,
+            intent.wants_comparator,
             intent.wants_switch,
+            intent.wants_relay,
         )
     )

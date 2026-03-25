@@ -12,8 +12,10 @@ _FAMILY_KEYWORDS = {
     "mcu": ["mcu", "microcontroller", "atmega", "attiny", "stm32", "esp32", "arduino"],
     "sensor": ["sensor", "thermistor", "ldr", "photoresistor", "probe", "analog input"],
     "led": ["led", "indicator", "status light", "blinker"],
-    "switch": ["mosfet", "transistor switch", "switch", "relay driver", "fan driver", "load driver"],
+    "switch": ["mosfet", "transistor switch", "switch", "fan driver", "load driver"],
+    "relay": ["relay", "relay driver", "spdt relay", "coil driver"],
     "opamp": ["opamp", "op-amp", "buffer", "voltage follower", "amplifier"],
+    "comparator": ["comparator", "threshold detector", "window detector", "lm393"],
     "divider": ["divider", "voltage divider", "resistor divider"],
     "filter": ["filter", "rc filter", "low pass", "high pass"],
     "timer": ["555", "timer", "astable", "monostable", "oscillator", "pwm"],
@@ -59,6 +61,14 @@ class DesignIntent:
     @property
     def wants_opamp(self) -> bool:
         return "opamp" in self.families
+
+    @property
+    def wants_comparator(self) -> bool:
+        return "comparator" in self.families
+
+    @property
+    def wants_relay(self) -> bool:
+        return "relay" in self.families
 
     @property
     def wants_divider(self) -> bool:
@@ -107,6 +117,10 @@ def parse_prompt(prompt: str, constraints: Optional[Dict[str, Any]] = None) -> D
         primary_family = "regulator"
     elif "opamp" in families:
         primary_family = "opamp"
+    elif "comparator" in families:
+        primary_family = "comparator"
+    elif "relay" in families:
+        primary_family = "relay"
 
     return DesignIntent(
         raw_prompt=prompt,

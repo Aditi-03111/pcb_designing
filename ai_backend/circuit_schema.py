@@ -257,7 +257,7 @@ class Component(BaseModel):
     schema_version: str = Field(default="2.0", pattern=r'^\d+\.\d+$')
     
     _ref_prefixes: ClassVar[set[str]] = {
-        'R', 'C', 'L', 'D', 'LED', 'Q', 'U', 'J', 'P', 
+        'R', 'C', 'L', 'D', 'LED', 'Q', 'U', 'J', 'P', 'K',
         'F', 'FB', 'SW', 'Y', 'X', 'TP', 'MH', 'H'
     }
     

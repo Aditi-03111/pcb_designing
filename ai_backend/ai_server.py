@@ -1262,6 +1262,10 @@ def _assess_support_status(intent: DesignIntent, generation_mode: str, board: Bo
         missing.append("switching stage")
     if intent.wants_opamp and "U" not in prefixes:
         missing.append("op-amp stage")
+    if intent.wants_comparator and "U" not in prefixes:
+        missing.append("comparator stage")
+    if intent.wants_relay and "K" not in prefixes:
+        missing.append("relay driver stage")
     if intent.wants_regulator and not any(c.part.startswith(("AMS1117", "LM7805")) for c in board.components):
         missing.append("regulator stage")
     if intent.wants_divider and len([c for c in board.components if c.prefix == "R"]) < 2:

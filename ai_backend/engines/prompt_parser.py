@@ -170,6 +170,17 @@ def _build_notes(prompt: str, constraints: Dict[str, Any]) -> List[str]:
         notes.append("battery_powered")
     if "usb" in prompt:
         notes.append("usb_interface")
+    unsupported_patterns = {
+        "unsupported_hbridge": ("h-bridge", "h bridge", "full bridge"),
+        "unsupported_bms": ("bms", "battery management", "cell balancing"),
+        "unsupported_charger": ("charger", "charging circuit", "charge controller"),
+        "unsupported_rf": ("rf", "antenna", "matching network"),
+        "unsupported_isolation": ("isolated", "isolation", "optocoupler"),
+        "unsupported_smps": ("buck converter", "boost converter", "switching regulator", "smps"),
+    }
+    for note, keywords in unsupported_patterns.items():
+        if any(keyword in prompt for keyword in keywords):
+            notes.append(note)
     if constraints:
         notes.append("has_constraints")
     return notes

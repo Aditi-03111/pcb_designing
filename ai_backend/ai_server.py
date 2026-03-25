@@ -1241,6 +1241,21 @@ def _assess_support_status(intent: DesignIntent, generation_mode: str, board: Bo
     prefixes = _component_prefixes(board)
     missing: List[str] = []
 
+    unsupported_note_map = {
+        "unsupported_hbridge": "H-bridge motor drivers",
+        "unsupported_bms": "battery management systems",
+        "unsupported_charger": "battery charging circuits",
+        "unsupported_rf": "RF circuits",
+        "unsupported_isolation": "isolated/interface circuits",
+        "unsupported_smps": "switch-mode power supplies",
+    }
+    unsupported_requested = [label for note, label in unsupported_note_map.items() if note in intent.notes]
+    if unsupported_requested:
+        support_status = "partial"
+        warnings.append(
+            "Prompt requests advanced circuit types not fully supported yet: " + ", ".join(unsupported_requested) + "."
+        )
+
     if intent.wants_timer and "U" not in prefixes:
         missing.append("timer stage")
     if intent.wants_switch and "Q" not in prefixes:

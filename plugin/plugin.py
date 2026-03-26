@@ -11,7 +11,6 @@ import math
 import os
 import queue
 import re
-import shutil
 import subprocess
 import tempfile
 import threading
@@ -25,6 +24,18 @@ from urllib.parse import urljoin
 
 import pcbnew
 import wx
+try:
+    import wx.lib.scrolledpanel as scrolled
+    _ScrolledPanelClass = scrolled.ScrolledPanel
+except Exception:
+    _ScrolledPanelClass = wx.ScrolledWindow
+
+try:
+    from wx.lib.floatcanvas import NavCanvas as _NavCanvas
+    HAS_FLOATCANVAS = True
+except Exception:
+    _NavCanvas = None
+    HAS_FLOATCANVAS = False
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -42,8 +53,6 @@ class PluginConfig:
     placement_step_size: float = 1.0  # mm
     thermal_aware: bool = True
     constraint_driven: bool = True
-    freerouting_jar: str = ""
-    freerouting_timeout: int = 900
     
     # File paths
     config_dir: str = field(default_factory=lambda: os.path.join(
@@ -203,18 +212,27 @@ HTTP_CLIENT = AsyncHTTPClient()
 
 # ── Visualization Canvas ──────────────────────────────────────────────────────
 
-class PlacementPreviewCanvas(wx.ScrolledWindow):
+if HAS_FLOATCANVAS:
+    _CanvasBase = _NavCanvas.NavCanvas
+else:
+    _CanvasBase = wx.ScrolledWindow
+
+
+class PlacementPreviewCanvas(_CanvasBase):
     """Interactive canvas for placement preview.
     Falls back to a wx.ScrolledWindow with manual DC drawing when
     wx.lib.floatcanvas is not available in the KiCad Python environment.
     """
 
     def __init__(self, parent):
-        super().__init__(parent, size=(400, 400),
-                         style=wx.HSCROLL | wx.VSCROLL)
-        self.SetScrollRate(5, 5)
-        self.SetBackgroundColour(wx.Colour(40, 40, 40))
-        self.Bind(wx.EVT_PAINT, self._on_paint)
+        if HAS_FLOATCANVAS:
+            super().__init__(parent, size=(400, 400))
+        else:
+            super().__init__(parent, size=(400, 400),
+                             style=wx.HSCROLL | wx.VSCROLL)
+            self.SetScrollRate(5, 5)
+            self.SetBackgroundColour(wx.Colour(40, 40, 40))
+            self.Bind(wx.EVT_PAINT, self._on_paint)
 
         self.board_width = 100.0
         self.board_height = 80.0
@@ -230,7 +248,10 @@ class PlacementPreviewCanvas(wx.ScrolledWindow):
     def set_board_dimensions(self, width: float, height: float):
         self.board_width = width
         self.board_height = height
-        self.Refresh()
+        if HAS_FLOATCANVAS:
+            self._draw_board()
+        else:
+            self.Refresh()
 
     def update_components(self, components: List[ComponentInfo],
                           nets: Optional[List[NetInfo]] = None):
@@ -245,9 +266,65 @@ class PlacementPreviewCanvas(wx.ScrolledWindow):
             self._draw()
 
     def _draw(self):
-        self.Refresh()
+        if HAS_FLOATCANVAS:
+            self._draw_floatcanvas()
+        else:
+            self.Refresh()
 
+    # ── FloatCanvas rendering ─────────────────────────────────────────────────
 
+    def _draw_board(self):
+        if not HAS_FLOATCANVAS:
+            return
+        self.Canvas.ClearAll()
+        w = self.board_width * self.scale
+        h = self.board_height * self.scale
+        self.Canvas.AddRectangle(
+            (-w / 2, -h / 2), (w, h),
+            LineColor="black", LineWidth=2,
+            FillColor="darkgreen", FillStyle="CrossHatch",
+        )
+        self.Canvas.ZoomToBB()
+
+    def _draw_floatcanvas(self):
+        if not HAS_FLOATCANVAS:
+            return
+        self._draw_board()
+        if self.show_ratsnest and self.nets:
+            self._draw_ratsnest_fc()
+        for ref, comp in self.components.items():
+            x = (comp.x - self.board_width / 2) * self.scale
+            y = -(comp.y - self.board_height / 2) * self.scale
+            color = self._get_component_color(comp)
+            if ref in self.selected_refs:
+                color = "red"
+            w2 = max(2.0, comp.width * self.scale * 0.8)
+            h2 = max(2.0, comp.height * self.scale * 0.8)
+            self.Canvas.AddRectangle(
+                (x - w2 / 2, y - h2 / 2), (w2, h2),
+                LineColor="black", LineWidth=1, FillColor=color,
+            )
+            self.Canvas.AddText(ref, (x, y), Size=8, Color="white", Position="cc")
+        self.Canvas.Draw()
+
+    def _draw_ratsnest_fc(self):
+        for net in self.nets:
+            if len(net.pins) < 2:
+                continue
+            positions = []
+            for pin in net.pins:
+                if pin["ref"] in self.components:
+                    c = self.components[pin["ref"]]
+                    positions.append((
+                        (c.x - self.board_width / 2) * self.scale,
+                        -(c.y - self.board_height / 2) * self.scale,
+                    ))
+            color = self._get_net_color(net)
+            for i in range(len(positions) - 1):
+                self.Canvas.AddLine(
+                    positions[i], positions[i + 1],
+                    LineColor=color, LineWidth=1, LineStyle="Dot",
+                )
 
     # ── wx.ScrolledWindow (fallback) rendering ────────────────────────────────
 
@@ -349,7 +426,13 @@ class PlacementPreviewCanvas(wx.ScrolledWindow):
         return "lightgray"
 
     def on_size(self, event):
-        self.Refresh()
+        if HAS_FLOATCANVAS:
+            try:
+                self.Canvas.ZoomToBB()
+            except Exception:
+                pass
+        else:
+            self.Refresh()
         event.Skip()
 
 
@@ -359,70 +442,57 @@ class AIPlacementPlugin(pcbnew.ActionPlugin):
     """Advanced KiCad plugin for AI-powered PCB design."""
     
     def defaults(self):
-        self.name = "AI KiCad Plugin"
+        self.name = "AI PCB Assistant Pro"
         self.category = "AI Tools"
-        self.description = "AI-powered PCB generation, placement, and DFM dashboard"
+        self.description = "Advanced AI-powered placement, routing, and DFM"
         self.show_toolbar_button = True
         icon_path = os.path.join(os.path.dirname(__file__), "icon_32x32.png")
         self.icon_file_name = icon_path if os.path.exists(icon_path) else ""
     
     def Run(self):
-        """Open the dashboard launcher for the current board."""
-        try:
-            board = pcbnew.GetBoard()
-            if board is None:
-                wx.MessageBox("No board is open.", "Error", wx.OK | wx.ICON_ERROR)
-                return
+        """Main entry point.
 
-            parent = self._get_top_window()
+        IMPORTANT: We store the frame on ``self`` so that Python's garbage
+        collector does not destroy it as soon as ``Run()`` returns.  Without
+        this the window flashes briefly and vanishes.
+        """
+        board = pcbnew.GetBoard()
+        if board is None:
+            wx.MessageBox("No board is open.", "Error", wx.OK | wx.ICON_ERROR)
+            return
 
-            if not self._check_backend():
-                dlg = BackendSetupDialog(parent)
-                if dlg.ShowModal() != wx.ID_OK:
-                    dlg.Destroy()
-                    return
-                dlg.Destroy()
-
-            # Initialize health check and UI safely
-            dlg = AIDashboardDialog(parent, self, board)
-            dlg.Show()
-        except Exception as e:
-            import traceback
-            logger.error(traceback.format_exc())
-            wx.MessageBox(f"Plugin Error: {e}", "AI PCB Assistant Error")
-
-    def _ensure_frame(self, board: pcbnew.BOARD) -> "AIPCBFrame":
-        # Check if frame exists and is still valid (not deleted)
-        existing = getattr(self, "_frame", None)
-        if existing:
+        # If a frame is already open, bring it to the front instead of
+        # creating a duplicate.  We guard with try/except because the C++
+        # wx.Frame object may already have been destroyed by the time Python
+        # tries to call methods on it.
+        existing: Optional["AIPCBFrame"] = getattr(self, "_frame", None)
+        if existing is not None:
             try:
-                # wx objects can become 'dead' even if the Python object exists
-                if not existing:
-                    existing = None
-                else:
+                alive = existing and existing.IsShown()
+            except Exception:
+                alive = False
+            if alive:
+                try:
                     existing.board = board
                     existing._extract_board_data()
-                    return existing
-            except Exception:
-                existing = None
-        
-        self._frame = AIPCBFrame(self._get_top_window(), board)
-        return self._frame
+                    existing.Raise()
+                    return
+                except Exception:
+                    pass
+            self._frame = None  # stale reference — fall through to create new
 
-    def _get_top_window(self) -> Optional[wx.Window]:
-        try:
-            app = wx.GetApp()
-            if hasattr(app, "GetTopWindow"):
-                return app.GetTopWindow()
-        except Exception:
-            pass
-        return None
+        # Check backend with timeout
+        if not self._check_backend():
+            dlg = BackendSetupDialog(None)
+            if dlg.ShowModal() != wx.ID_OK:
+                dlg.Destroy()
+                return
+            dlg.Destroy()
 
-    def _show_frame(self, board: pcbnew.BOARD) -> "AIPCBFrame":
-        frame = self._ensure_frame(board)
-        frame.Show()
-        frame.Raise()
-        return frame
+        # Show main window — keep reference alive on self
+        self._frame = AIPCBFrame(None, board)
+        self._frame.Show()
+        self._frame.Raise()
     
     def _check_backend(self) -> bool:
         """Check if backend is available."""
@@ -613,7 +683,7 @@ class AIPCBFrame(wx.Frame):
     
     def _create_left_panel(self, parent) -> wx.Panel:
         """Create left control panel."""
-        panel = wx.ScrolledWindow(parent, size=(400, -1))
+        panel = _ScrolledPanelClass(parent, size=(400, -1))
         sizer = wx.BoxSizer(wx.VERTICAL)
         
         # AI Assistant section
@@ -1084,8 +1154,7 @@ class AIPCBFrame(wx.Frame):
 
         summary = (
             f"Generation complete!\n\n"
-            f"Mode: {result.get('generation_mode', 'llm')}\n"
-            f"Source: {result.get('template_used', 'LLM/custom')}\n"
+            f"Template: {result.get('template_used', 'LLM/custom')}\n"
             f"Components: {component_count}\n"
             f"Nets: {net_count}\n"
             f"Time: {result.get('generation_time_ms', 0):.1f} ms\n"
@@ -1273,853 +1342,6 @@ class AIPCBFrame(wx.Frame):
             return float(fp.GetOrientation()) / 10.0  # tenths of degree
         except Exception:
             return 0.0
-
-
-# ── Dashboard Dialog ──────────────────────────────────────────────────────────
-
-class AIDashboardDialog(wx.Frame):
-    """Dashboard-first launcher styled after the prototype plugin UI."""
-
-    def __init__(self, parent, plugin: AIPlacementPlugin, board: pcbnew.BOARD):
-        super().__init__(parent, title="AI KiCad Plugin", size=(560, 900), style=wx.DEFAULT_FRAME_STYLE | wx.STAY_ON_TOP)
-        self.plugin = plugin
-        self.board = board
-        self.SetBackgroundColour(wx.Colour(16, 20, 28))
-        self._init_ui()
-        self._refresh_health()
-
-    def _init_ui(self):
-        root = wx.Panel(self)
-        root.SetBackgroundColour(wx.Colour(16, 20, 28))
-        outer = wx.BoxSizer(wx.VERTICAL)
-
-        scroll = wx.ScrolledWindow(root, style=wx.VSCROLL)
-        scroll.SetScrollRate(0, 16)
-        scroll.SetBackgroundColour(wx.Colour(16, 20, 28))
-        content = wx.BoxSizer(wx.VERTICAL)
-
-        hero = wx.Panel(scroll)
-        hero.SetBackgroundColour(wx.Colour(24, 31, 43))
-        hero_box = wx.BoxSizer(wx.VERTICAL)
-
-        eyebrow = wx.StaticText(hero, label="AI PCB ASSISTANT")
-        eyebrow.SetForegroundColour(wx.Colour(93, 196, 255))
-        eyebrow.SetFont(wx.Font(9, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-        hero_box.Add(eyebrow, 0, wx.LEFT | wx.RIGHT | wx.TOP, 20)
-
-        title = wx.StaticText(hero, label="Modern KiCad workflow\nfrom prompt to fabrication.")
-        title.SetForegroundColour(wx.WHITE)
-        title.SetFont(wx.Font(18, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-        hero_box.Add(title, 0, wx.LEFT | wx.RIGHT | wx.TOP, 12)
-
-        subtitle = wx.StaticText(
-            hero,
-            label="Generate circuits, inspect board state, validate manufacturability, autoroute, and export production files from one workspace.",
-        )
-        subtitle.SetForegroundColour(wx.Colour(166, 176, 191))
-        subtitle.SetFont(wx.Font(10, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
-        subtitle.Wrap(470)
-        hero_box.Add(subtitle, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 12)
-
-        badges = wx.BoxSizer(wx.HORIZONTAL)
-        for text in ("Local-first", "KiCad-native", "Fabrication-ready"):
-            badge = wx.StaticText(hero, label=f"  {text}  ")
-            badge.SetForegroundColour(wx.Colour(214, 233, 255))
-            badge.SetBackgroundColour(wx.Colour(31, 53, 78))
-            badges.Add(badge, 0, wx.RIGHT, 8)
-        hero_box.Add(badges, 0, wx.LEFT | wx.RIGHT | wx.TOP | wx.BOTTOM, 20)
-        hero.SetSizer(hero_box)
-        content.Add(hero, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 18)
-
-        content.Add(self._section_label(scroll, "Design"), 0, wx.LEFT | wx.RIGHT | wx.TOP, 18)
-        self.btn_generate = self._action_button(
-            scroll,
-            "Auto Generate Schematic",
-            "Turn natural-language circuit requests into a KiCad schematic export.",
-            wx.Colour(44, 122, 255),
-        )
-        self.btn_write = self._action_button(
-            scroll,
-            "Write Components to PCB",
-            "Guide the schematic-to-PCB handoff and populate the current board workflow.",
-            wx.Colour(28, 181, 163),
-        )
-        self.btn_netlist = self._action_button(
-            scroll,
-            "Generate Netlist",
-            "Summarize connectivity and net structure from the active board.",
-            wx.Colour(83, 110, 255),
-        )
-        content.Add(self.btn_generate, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 12)
-        content.Add(self.btn_write, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 12)
-        content.Add(self.btn_netlist, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 12)
-
-        content.Add(self._section_label(scroll, "Board Intelligence"), 0, wx.LEFT | wx.RIGHT | wx.TOP, 20)
-        self.btn_place = self._action_button(
-            scroll,
-            "AI Component Placement (RL)",
-            "Optimize footprint locations using rule-based and RL-assisted placement heuristics.",
-            wx.Colour(33, 184, 112),
-        )
-        self.btn_route = self._action_button(
-            scroll,
-            "FreeRouting Autoroute",
-            "Export DSN, run FreeRouting, and import routed results back into KiCad.",
-            wx.Colour(27, 152, 171),
-        )
-        self.btn_sim = self._action_button(
-            scroll,
-            "ngspice Integration",
-            "Check simulation readiness and hand off to KiCad's native SPICE workflow.",
-            wx.Colour(117, 94, 220),
-        )
-        self.btn_mfg = self._action_button(
-            scroll,
-            "Manufacturing Checks",
-            "Review edge clearances, component placement risks, and DFM issues.",
-            wx.Colour(230, 140, 45),
-        )
-        self.btn_drc = self._action_button(
-            scroll,
-            "Run DRC Check",
-            "Run the current board through backend design-rule checks and placement warnings.",
-            wx.Colour(184, 74, 205),
-        )
-        for card in (self.btn_place, self.btn_route, self.btn_sim, self.btn_mfg, self.btn_drc):
-            content.Add(card, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 12)
-
-        content.Add(self._section_label(scroll, "Release"), 0, wx.LEFT | wx.RIGHT | wx.TOP, 20)
-        self.btn_gerber = self._action_button(
-            scroll,
-            "Export Gerber Files",
-            "Generate fabrication outputs for copper, mask, silkscreen, outline, and drills.",
-            wx.Colour(208, 72, 72),
-        )
-        content.Add(self.btn_gerber, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 12)
-
-        status_panel = wx.Panel(scroll)
-        status_panel.SetBackgroundColour(wx.Colour(24, 31, 43))
-        status_box = wx.BoxSizer(wx.VERTICAL)
-
-        status_label = wx.StaticText(status_panel, label="SYSTEM STATUS")
-        status_label.SetForegroundColour(wx.Colour(124, 138, 158))
-        status_label.SetFont(wx.Font(8, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-        status_box.Add(status_label, 0, wx.LEFT | wx.RIGHT | wx.TOP, 16)
-
-        self.status = wx.StaticText(status_panel, label="Checking backend status...")
-        self.status.SetForegroundColour(wx.Colour(0, 210, 110))
-        self.status.SetFont(wx.Font(11, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-        status_box.Add(self.status, 0, wx.LEFT | wx.RIGHT | wx.TOP, 8)
-
-        self.status_meta = wx.StaticText(status_panel, label=f"Backend URL: {CONFIG.backend_url}")
-        self.status_meta.SetForegroundColour(wx.Colour(148, 158, 171))
-        self.status_meta.SetFont(wx.Font(9, wx.FONTFAMILY_TELETYPE, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
-        status_box.Add(self.status_meta, 0, wx.LEFT | wx.RIGHT | wx.TOP, 6)
-
-        footer = wx.StaticText(status_panel, label="Powered by the updated AI PCB Assistant backend")
-        footer.SetForegroundColour(wx.Colour(120, 128, 141))
-        footer.SetFont(wx.Font(8, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
-        status_box.Add(footer, 0, wx.LEFT | wx.RIGHT | wx.TOP | wx.BOTTOM, 12)
-        status_panel.SetSizer(status_box)
-        content.Add(status_panel, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP | wx.BOTTOM, 18)
-
-        scroll.SetSizer(content)
-        outer.Add(scroll, 1, wx.EXPAND)
-        root.SetSizer(outer)
-
-        self._bind_card(self.btn_generate, self._on_generate)
-        self._bind_card(self.btn_write, self._on_write_components)
-        self._bind_card(self.btn_netlist, self._on_netlist)
-        self._bind_card(self.btn_place, self._on_placement)
-        self._bind_card(self.btn_route, self._on_freerouting)
-        self._bind_card(self.btn_sim, self._on_ngspice)
-        self._bind_card(self.btn_mfg, self._on_dfm)
-        self._bind_card(self.btn_drc, self._on_drc)
-        self._bind_card(self.btn_gerber, self._on_export_gerbers)
-
-    def _section_label(self, parent, label: str) -> wx.StaticText:
-        text = wx.StaticText(parent, label=label.upper())
-        text.SetForegroundColour(wx.Colour(120, 134, 155))
-        text.SetFont(wx.Font(8, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-        return text
-
-    def _action_button(self, parent, title: str, subtitle: str, accent: wx.Colour) -> wx.Panel:
-        panel = wx.Panel(parent)
-        panel.SetBackgroundColour(wx.Colour(22, 28, 39))
-        panel.SetMinSize((-1, 92))
-        panel.SetCursor(wx.Cursor(wx.CURSOR_HAND))
-
-        layout = wx.BoxSizer(wx.HORIZONTAL)
-
-        accent_bar = wx.Panel(panel, size=(6, -1))
-        accent_bar.SetBackgroundColour(accent)
-        layout.Add(accent_bar, 0, wx.EXPAND)
-
-        body = wx.BoxSizer(wx.VERTICAL)
-        title_text = wx.StaticText(panel, label=title)
-        title_text.SetForegroundColour(wx.WHITE)
-        title_text.SetFont(wx.Font(12, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-        body.Add(title_text, 0, wx.LEFT | wx.RIGHT | wx.TOP, 14)
-
-        subtitle_text = wx.StaticText(panel, label=subtitle)
-        subtitle_text.SetForegroundColour(wx.Colour(150, 162, 178))
-        subtitle_text.SetFont(wx.Font(9, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
-        subtitle_text.Wrap(430)
-        body.Add(subtitle_text, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP | wx.BOTTOM, 6)
-
-        layout.Add(body, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
-
-        chevron = wx.StaticText(panel, label=">")
-        chevron.SetForegroundColour(wx.Colour(123, 136, 153))
-        chevron.SetFont(wx.Font(13, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-        layout.Add(chevron, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 16)
-
-        panel.SetSizer(layout)
-        return panel
-
-    def _bind_card(self, panel: wx.Panel, handler: Callable):
-        def on_enter(event):
-            panel.SetBackgroundColour(wx.Colour(28, 35, 48))
-            panel.Refresh()
-            event.Skip()
-
-        def on_leave(event):
-            panel.SetBackgroundColour(wx.Colour(22, 28, 39))
-            panel.Refresh()
-            event.Skip()
-
-        panel.Bind(wx.EVT_ENTER_WINDOW, on_enter)
-        panel.Bind(wx.EVT_LEAVE_WINDOW, on_leave)
-        panel.Bind(wx.EVT_LEFT_UP, handler)
-        for child in panel.GetChildren():
-            child.Bind(wx.EVT_LEFT_UP, handler)
-            child.Bind(wx.EVT_ENTER_WINDOW, on_enter)
-            child.Bind(wx.EVT_LEAVE_WINDOW, on_leave)
-
-    def _refresh_health(self):
-        try:
-            req = urllib.request.Request(f"{CONFIG.backend_url}/health", method="GET")
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                data = json.loads(resp.read().decode())
-            mode = "healthy" if data.get("llm_loaded") else "running"
-            capabilities = ", ".join(data.get("capabilities", [])[:4]) or "core services online"
-            self._set_status(f"Ready - FastAPI + backend {mode}", (0, 210, 110))
-            self.status_meta.SetLabel(f"Backend URL: {CONFIG.backend_url}\nCapabilities: {capabilities}")
-        except Exception as exc:
-            self._set_status(f"Backend unavailable - {exc}", (255, 120, 120))
-            self.status_meta.SetLabel(f"Backend URL: {CONFIG.backend_url}\nCheck that the local AI backend is running.")
-
-    def _set_status(self, message: str, color=(0, 210, 110)):
-        self.status.SetLabel(message)
-        self.status.SetForegroundColour(wx.Colour(*color))
-        self.status.Refresh()
-        self.Layout()
-
-    def _prompt_dialog(self, title: str, message: str, default: str) -> Optional[str]:
-        dlg = wx.TextEntryDialog(self, message, title, default)
-        value = None
-        if dlg.ShowModal() == wx.ID_OK:
-            value = dlg.GetValue().strip()
-        dlg.Destroy()
-        return value or None
-
-    def _post_json(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        req = urllib.request.Request(
-            f"{CONFIG.backend_url}{path}",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=CONFIG.request_timeout) as resp:
-            return json.loads(resp.read().decode())
-
-    def _show_text(self, title: str, text: str):
-        dlg = wx.MessageDialog(self, text, title, wx.OK | wx.ICON_INFORMATION)
-        dlg.ShowModal()
-        dlg.Destroy()
-
-    def _select_freerouting_jar(self) -> Optional[str]:
-        start_dir = os.path.dirname(CONFIG.freerouting_jar) if CONFIG.freerouting_jar else os.path.expanduser("~")
-        with wx.FileDialog(
-            self,
-            "Select FreeRouting JAR",
-            defaultDir=start_dir,
-            wildcard="JAR files (*.jar)|*.jar",
-            style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST,
-        ) as dlg:
-            if dlg.ShowModal() == wx.ID_OK:
-                path = dlg.GetPath()
-                CONFIG.freerouting_jar = path
-                CONFIG.save()
-                return path
-        return None
-
-    def _ensure_freerouting_jar(self) -> str:
-        jar = (CONFIG.freerouting_jar or "").strip()
-        if jar and os.path.exists(jar):
-            return jar
-        chosen = self._select_freerouting_jar()
-        if chosen and os.path.exists(chosen):
-            return chosen
-        raise RuntimeError(
-            "FreeRouting JAR not configured. Download freerouting.jar and select it when prompted."
-        )
-
-    def _call_first_available(self, names: List[str], *args):
-        errors = []
-        for name in names:
-            fn = getattr(pcbnew, name, None)
-            if not callable(fn):
-                continue
-            try:
-                return fn(*args)
-            except TypeError as exc:
-                errors.append(f"{name}: {exc}")
-                continue
-        if errors:
-            raise RuntimeError("; ".join(errors))
-        raise RuntimeError(f"KiCad API not available for any of: {', '.join(names)}")
-
-    def _export_dsn(self, dsn_path: str):
-        board_path = self.board.GetFileName() if self.board else ""
-        errors = []
-        candidates = [
-            ("ExportSpecctraDSN", (self.board, dsn_path)),
-            ("ExportSpecctraDSN", (dsn_path,)),
-            ("ExportDSN", (self.board, dsn_path)),
-            ("ExportDSN", (dsn_path,)),
-        ]
-        for name, args in candidates:
-            fn = getattr(pcbnew, name, None)
-            if not callable(fn):
-                continue
-            try:
-                fn(*args)
-                if os.path.exists(dsn_path):
-                    return
-            except Exception as exc:
-                errors.append(f"{name}: {exc}")
-        raise RuntimeError(
-            "Unable to export DSN from KiCad. Save the board first and verify your KiCad build supports Specctra export."
-            + (f" Details: {' | '.join(errors)}" if errors else "")
-            + (f" Board: {board_path}" if board_path else "")
-        )
-
-    def _import_ses(self, ses_path: str) -> bool:
-        errors = []
-        candidates = [
-            ("ImportSpecctraSES", (self.board, ses_path)),
-            ("ImportSpecctraSES", (ses_path,)),
-            ("ImportSpecctraSession", (self.board, ses_path)),
-            ("ImportSpecctraSession", (ses_path,)),
-            ("LoadSpecctraSession", (self.board, ses_path)),
-            ("LoadSpecctraSession", (ses_path,)),
-        ]
-        for name, args in candidates:
-            fn = getattr(pcbnew, name, None)
-            if not callable(fn):
-                continue
-            try:
-                fn(*args)
-                try:
-                    pcbnew.Refresh()
-                except Exception:
-                    pass
-                return True
-            except Exception as exc:
-                errors.append(f"{name}: {exc}")
-        logger.warning("SES import not available: %s", " | ".join(errors))
-        return False
-
-    def _export_gerbers(self, output_dir: str) -> List[str]:
-        os.makedirs(output_dir, exist_ok=True)
-        generated: List[str] = []
-        plot_controller = pcbnew.PLOT_CONTROLLER(self.board)
-        options = plot_controller.GetPlotOptions()
-        options.SetOutputDirectory(output_dir)
-        options.SetPlotFrameRef(False)
-        options.SetAutoScale(False)
-        options.SetScale(1)
-        options.SetMirror(False)
-        options.SetUseGerberAttributes(True)
-        try:
-            options.SetUseGerberX2format(True)
-        except Exception:
-            pass
-        try:
-            options.SetSubtractMaskFromSilk(False)
-        except Exception:
-            pass
-
-        layers = [
-            ("F_Cu", pcbnew.F_Cu, "Front copper"),
-            ("B_Cu", pcbnew.B_Cu, "Back copper"),
-            ("F_SilkS", pcbnew.F_SilkS, "Front silkscreen"),
-            ("B_SilkS", pcbnew.B_SilkS, "Back silkscreen"),
-            ("F_Mask", pcbnew.F_Mask, "Front solder mask"),
-            ("B_Mask", pcbnew.B_Mask, "Back solder mask"),
-            ("Edge_Cuts", pcbnew.Edge_Cuts, "Board outline"),
-        ]
-
-        for suffix, layer_id, description in layers:
-            plot_controller.SetLayer(layer_id)
-            plot_controller.OpenPlotfile(suffix, pcbnew.PLOT_FORMAT_GERBER, description)
-            if plot_controller.PlotLayer():
-                generated.append(os.path.join(output_dir, f"{suffix}.gbr"))
-        plot_controller.ClosePlot()
-
-        excellon = getattr(pcbnew, "EXCELLON_WRITER", None)
-        if excellon is not None:
-            try:
-                drill_writer = excellon(self.board)
-                try:
-                    drill_writer.SetFormat(True)
-                except Exception:
-                    pass
-                try:
-                    drill_writer.SetOptions(False, False, output_dir, False)
-                except TypeError:
-                    try:
-                        drill_writer.SetOptions(False, False, output_dir)
-                    except Exception:
-                        pass
-                try:
-                    drill_writer.CreateDrillandMapFilesSet(output_dir, True, False)
-                except TypeError:
-                    drill_writer.CreateDrillandMapFilesSet(output_dir, True, False, False)
-            except Exception as exc:
-                logger.warning("Excellon drill export failed: %s", exc)
-
-        return generated
-
-    def _on_export_gerbers(self, event):
-        board_file = self.board.GetFileName() if self.board else ""
-        if not board_file:
-            self._show_text("Export Gerber Files", "Save the PCB board first before exporting Gerbers.")
-            return
-
-        board_dir = os.path.dirname(board_file) or os.getcwd()
-        default_dir = os.path.join(board_dir, "gerbers")
-        with wx.DirDialog(self, "Choose Gerber output folder", defaultPath=default_dir, style=wx.DD_DEFAULT_STYLE | wx.DD_DIR_MUST_EXIST) as dlg:
-            if dlg.ShowModal() == wx.ID_OK:
-                output_dir = dlg.GetPath()
-            else:
-                return
-
-        try:
-            self._set_status("Exporting Gerber files...", (255, 210, 90))
-            generated = self._export_gerbers(output_dir)
-            summary = [f"Gerber output: {output_dir}"]
-            if generated:
-                summary.append("")
-                summary.append("Layers exported:")
-                summary.extend(os.path.basename(path) for path in generated)
-            summary.append("")
-            summary.append("Drill files are exported when KiCad's Excellon writer is available.")
-            self._set_status("Gerber export complete.", (0, 210, 110))
-            self._show_text("Export Gerber Files", "\n".join(summary))
-        except Exception as exc:
-            self._set_status("Gerber export failed.", (255, 120, 120))
-            self._show_text("Export Gerber Files", str(exc))
-
-    def _on_generate(self, event):
-        prompt = self._prompt_dialog(
-            "Auto Generate Schematic",
-            "Describe the circuit to generate:",
-            "12V to 3.3V regulator for sensor board with status LED",
-        )
-        if not prompt:
-            return
-        self._set_status("Generating schematic...", (255, 210, 90))
-        try:
-            result = self._post_json("/generate", {"prompt": prompt, "priority": "quality"})
-            if not result.get("success"):
-                raise RuntimeError(result.get("error", "Unknown backend error"))
-            circuit_data = result.get("circuit_data") or {}
-            download_url = result.get('download_url')
-            
-            if download_url:
-                full_url = f"{CONFIG.backend_url}{download_url}"
-                req = urllib.request.Request(full_url, method="GET")
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    sch_data = resp.read()
-                
-                default_name = download_url.split('/')[-1]
-                default_dir = os.path.dirname(self.board.GetFileName()) if self.board and self.board.GetFileName() else ""
-                
-                with wx.FileDialog(self, "Save Generated Schematic", defaultDir=default_dir,
-                                   defaultFile=default_name, wildcard="KiCad Schematic (*.kicad_sch)|*.kicad_sch",
-                                   style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT) as dlg:
-                    if dlg.ShowModal() == wx.ID_OK:
-                        save_path = dlg.GetPath()
-                        with open(save_path, 'wb') as f:
-                            f.write(sch_data)
-                        
-                        summary = (
-                            f"Schematic successfully saved to:\n{save_path}\n\n"
-                            f"Mode: {result.get('generation_mode', 'llm')}\n"
-                            f"Components: {len(circuit_data.get('components', []))}\n"
-                            f"Nets: {len(circuit_data.get('connections', []))}"
-                        )
-                        self._set_status("Schematic saved.", (0, 210, 110))
-                        
-                        # Show success and offer to open
-                        dlg2 = wx.MessageDialog(self, summary + "\n\nWould you like to open it now?", "Schematic Saved", wx.YES_NO | wx.ICON_INFORMATION)
-                        if dlg2.ShowModal() == wx.ID_YES:
-                            import platform, subprocess
-                            if platform.system() == 'Darwin':
-                                subprocess.Popen(['open', save_path])
-                            elif platform.system() == 'Windows':
-                                os.startfile(save_path)
-                            else:
-                                subprocess.Popen(['xdg-open', save_path])
-                        dlg2.Destroy()
-                    else:
-                        self._set_status("Save cancelled.", (200, 200, 0))
-            else:
-                summary = (
-                    f"Mode: {result.get('generation_mode', 'llm')}\n"
-                    f"Components: {len(circuit_data.get('components', []))}\n"
-                )
-                self._set_status("Schematic generated (no download url).", (200, 200, 0))
-                self._show_text("Schematic Generated", summary)
-        except Exception as exc:
-            self._set_status("Generation failed.", (255, 120, 120))
-            self._show_text("Error", str(exc))
-
-    def _classify_net(self, name: str) -> str:
-        name_upper = (name or "").upper()
-        if any(p in name_upper for p in ["VCC", "VDD", "3V3", "5V", "12V", "VIN", "PWR"]):
-            return "power"
-        if any(g in name_upper for g in ["GND", "VSS", "AGND", "DGND"]):
-            return "ground"
-        if any(c in name_upper for c in ["CLK", "CLOCK", "OSC"]):
-            return "clock"
-        if any(a in name_upper for a in ["ADC", "DAC", "SENSE", "ANALOG"]):
-            return "analog"
-        return "signal"
-
-    def _collect_board_data(self) -> Dict[str, Any]:
-        components: List[Dict[str, Any]] = []
-        connections: List[Dict[str, Any]] = []
-        try:
-            bbox = self.board.GetBoardEdgesBoundingBox()
-            board_width = pcbnew.ToMM(bbox.GetWidth())
-            board_height = pcbnew.ToMM(bbox.GetHeight())
-        except Exception:
-            board_width = 100.0
-            board_height = 80.0
-
-        try:
-            footprints = list(self.board.GetFootprints())
-        except Exception:
-            footprints = []
-
-        for fp in footprints:
-            try:
-                pos = fp.GetPosition()
-                try:
-                    bbox = fp.GetBoundingBox(False, False)
-                except TypeError:
-                    try:
-                        bbox = fp.GetBoundingBox(False)
-                    except TypeError:
-                        bbox = fp.GetBoundingBox()
-
-                components.append(
-                    {
-                        "ref": fp.GetReference(),
-                        "value": fp.GetValue(),
-                        "footprint": AIPCBFrame._get_footprint_name(fp),
-                        "x": pcbnew.ToMM(pos.x),
-                        "y": pcbnew.ToMM(pos.y),
-                        "rotation": AIPCBFrame._get_orientation_degrees(fp),
-                        "layer": "top" if fp.GetLayer() == pcbnew.F_Cu else "bottom",
-                        "width": pcbnew.ToMM(bbox.GetWidth()),
-                        "height": pcbnew.ToMM(bbox.GetHeight()),
-                        "fixed": bool(fp.IsLocked()),
-                        "power_dissipation": 0.0,
-                    }
-                )
-            except Exception:
-                continue
-
-        try:
-            nets_map = self.board.GetNetInfo().NetsByName()
-            for net_name, net in nets_map.items():
-                try:
-                    if net.GetNetCode() == 0:
-                        continue
-                    pins = []
-                    for pad in net.GetPads():
-                        try:
-                            pins.append({"ref": pad.GetParent().GetReference(), "pin": str(pad.GetNumber())})
-                        except Exception:
-                            pass
-                    if len(pins) >= 2:
-                        connections.append(
-                            {
-                                "net": str(net_name),
-                                "net_type": self._classify_net(str(net_name)),
-                                "pins": pins,
-                            }
-                        )
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
-        if board_width <= 0:
-            board_width = 100.0
-        if board_height <= 0:
-            board_height = 80.0
-
-        return {
-            "components": components,
-            "connections": connections,
-            "constraints": [],
-            "board_width": board_width,
-            "board_height": board_height,
-        }
-
-    def _apply_positions(self, result: Dict[str, Any]) -> int:
-        positions = result.get("positions", {}) if isinstance(result, dict) else {}
-        moved = 0
-        if not positions:
-            return moved
-        for fp in self.board.GetFootprints():
-            ref = fp.GetReference()
-            pos = positions.get(ref)
-            if not pos:
-                continue
-            try:
-                fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(pos["x"]), pcbnew.FromMM(pos["y"])))
-                if "rotation" in pos:
-                    try:
-                        fp.SetOrientationDegrees(pos["rotation"])
-                    except Exception:
-                        pass
-                moved += 1
-            except Exception:
-                continue
-        if moved:
-            try:
-                pcbnew.Refresh()
-            except Exception:
-                pass
-        return moved
-
-    def _project_schematic_path(self) -> Optional[str]:
-        board_file = self.board.GetFileName() if self.board else ""
-        if not board_file:
-            return None
-        candidate = os.path.splitext(board_file)[0] + ".kicad_sch"
-        return candidate if os.path.exists(candidate) else None
-
-    def _on_write_components(self, event):
-        board_file = self.board.GetFileName() if self.board else ""
-        if not board_file:
-            self._show_text("Write Components to PCB", "Save the PCB project first so KiCad can link it with the project schematic.")
-            return
-
-        data = self._collect_board_data()
-        schematic_path = self._project_schematic_path()
-        lines = [f"PCB file: {board_file}"]
-        if schematic_path:
-            lines.append(f"Project schematic: {schematic_path}")
-        else:
-            lines.append("Project schematic: not found next to the board")
-
-        if data["components"]:
-            lines.append("")
-            lines.append(f"The PCB already contains {len(data['components'])} footprint(s).")
-            lines.append("If you changed the schematic, run KiCad: Tools > Update PCB from Schematic.")
-        else:
-            lines.append("")
-            lines.append("No footprints are currently on the PCB.")
-            lines.append("To write components to the PCB:")
-            lines.append("1. Open the project schematic in Schematic Editor")
-            lines.append("2. Assign footprints to symbols")
-            lines.append("3. In PCB Editor, run Tools > Update PCB from Schematic")
-            lines.append("4. Save the .kicad_pcb board and rerun placement/routing")
-
-        self._set_status("Checked PCB write workflow.", (0, 210, 110))
-        self._show_text("Write Components to PCB", "\n".join(lines))
-
-    def _on_netlist(self, event):
-        self._set_status("Reading board netlist...", (255, 210, 90))
-        try:
-            data = self._collect_board_data()
-            components = data.get("components", [])
-            connections = data.get("connections", [])
-            if not components:
-                raise RuntimeError("No footprints found on the current board.")
-
-            lines = ["Active PCB netlist summary", ""]
-            lines.append(f"Components: {len(components)}")
-            lines.append(f"Nets: {len(connections)}")
-
-            if connections:
-                lines.append("")
-                lines.append("Net connections:")
-                for conn in connections[:16]:
-                    net_name = conn.get("net", "<unnamed>")
-                    pin_str = ", ".join(f"{p.get('ref')}.{p.get('pin')}" for p in conn.get("pins", []))
-                    lines.append(f"{net_name}: {pin_str}")
-            else:
-                lines.append("")
-                lines.append("No routed or connected nets were found on the current board.")
-
-            self._set_status("Board netlist summarized.", (0, 210, 110))
-            self._show_text("Generate Netlist", "\n".join(lines))
-        except Exception as exc:
-            self._set_status("Netlist summary failed.", (255, 120, 120))
-            self._show_text("Generate Netlist", str(exc))
-
-    def _on_placement(self, event):
-        self._set_status("Running placement optimization...", (255, 210, 90))
-        try:
-            data = self._collect_board_data()
-            if not data["components"]:
-                raise RuntimeError("No footprints found on the current board.")
-            data["thermal_aware"] = CONFIG.thermal_aware
-            result = self._post_json("/placement/optimize?algorithm=auto", data)
-            moved = self._apply_positions(result)
-            metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
-            summary = (
-                f"Moved footprints: {moved}\n"
-                f"Wirelength: {metrics.get('wirelength', 0):.1f} mm\n"
-                f"Thermal score: {metrics.get('thermal_score', 0):.1f}\n"
-                f"Density: {metrics.get('density_score', 0):.1f}%"
-            )
-            self._set_status("Placement optimization complete.", (0, 210, 110))
-            self._show_text("AI Component Placement", summary)
-        except Exception as exc:
-            self._set_status("Placement failed.", (255, 120, 120))
-            self._show_text("Error", str(exc))
-
-    def _on_freerouting(self, event):
-        board_file = self.board.GetFileName() if self.board else ""
-        if not board_file:
-            self._show_text("FreeRouting Autoroute", "Save the PCB board first before running FreeRouting.")
-            return
-
-        try:
-            jar_path = self._ensure_freerouting_jar()
-            board_dir = os.path.dirname(board_file) or os.getcwd()
-            board_base = os.path.splitext(os.path.basename(board_file))[0]
-            dsn_path = os.path.join(board_dir, f"{board_base}.dsn")
-            ses_path = os.path.join(board_dir, f"{board_base}.ses")
-
-            self._set_status("Exporting DSN for FreeRouting...", (255, 210, 90))
-            self._export_dsn(dsn_path)
-
-            self._set_status("Running FreeRouting...", (255, 210, 90))
-            cmd = ["java", "-jar", jar_path, "-de", dsn_path, "-do", ses_path]
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=max(60, int(CONFIG.freerouting_timeout)),
-            )
-            if proc.returncode != 0:
-                stderr = (proc.stderr or proc.stdout or "Unknown FreeRouting error").strip()
-                raise RuntimeError(stderr[-1200:])
-
-            if not os.path.exists(ses_path):
-                raise RuntimeError("FreeRouting finished but no SES session file was produced.")
-
-            imported = self._import_ses(ses_path)
-            summary = (
-                f"DSN: {dsn_path}\n"
-                f"SES: {ses_path}\n"
-                f"Imported into KiCad: {'Yes' if imported else 'No'}"
-            )
-            if not imported:
-                summary += "\n\nImport the SES manually in KiCad via File > Import > SES."
-
-            self._set_status("FreeRouting completed.", (0, 210, 110))
-            self._show_text("FreeRouting Autoroute", summary)
-        except subprocess.TimeoutExpired:
-            self._set_status("FreeRouting timed out.", (255, 120, 120))
-            self._show_text(
-                "FreeRouting Autoroute",
-                "FreeRouting timed out before finishing. Try a simpler board or increase freerouting_timeout in config.",
-            )
-        except Exception as exc:
-            self._set_status("FreeRouting failed.", (255, 120, 120))
-            self._show_text("FreeRouting Autoroute", str(exc))
-
-    def _on_ngspice(self, event):
-        board_file = self.board.GetFileName() if self.board else ""
-        schematic_path = self._project_schematic_path()
-        ngspice_path = shutil.which("ngspice")
-
-        lines = ["ngspice integration status", ""]
-        lines.append(f"PCB file: {board_file or 'Not saved'}")
-        lines.append(f"Project schematic: {schematic_path or 'Not found'}")
-        lines.append(f"ngspice executable: {ngspice_path or 'Not installed'}")
-        lines.append("")
-
-        if not schematic_path:
-            lines.append("This project is not ready for simulation because the project schematic was not found next to the PCB file.")
-        else:
-            try:
-                schematic_text = open(schematic_path, 'r', encoding='utf-8', errors='ignore').read()
-            except Exception as exc:
-                schematic_text = ""
-                lines.append(f"Could not read schematic: {exc}")
-
-            if schematic_text:
-                has_sim_model = any(token in schematic_text.lower() for token in ["sim.library", "sim.device", "spice_model", "spice"])
-                if has_sim_model:
-                    lines.append("Schematic contains simulation-related fields or model hints.")
-                else:
-                    lines.append("No obvious SPICE model fields were detected in the schematic yet.")
-                lines.append("Open KiCad Schematic Editor -> Inspect -> Simulator for native ngspice workflow.")
-
-        if not ngspice_path:
-            lines.append("")
-            lines.append("Install ngspice first, for example on macOS:")
-            lines.append("brew install ngspice")
-        else:
-            try:
-                proc = subprocess.run([ngspice_path, '-v'], capture_output=True, text=True, timeout=10)
-                version_line = (proc.stdout or proc.stderr or '').strip().splitlines()
-                if version_line:
-                    lines.append("")
-                    lines.append(f"Detected: {version_line[0]}")
-            except Exception as exc:
-                lines.append("")
-                lines.append(f"Failed to query ngspice version: {exc}")
-
-        self._set_status("Checked ngspice integration.", (0, 210, 110))
-        self._show_text("ngspice Integration", "\n".join(lines))
-
-    def _on_dfm(self, event):
-        self._run_board_check("/dfm/check", "Manufacturing Checks")
-
-    def _on_drc(self, event):
-        self._run_board_check("/dfm/check", "Run DRC Check")
-
-    def _run_board_check(self, path: str, title: str):
-        self._set_status(f"Running {title.lower()}...", (255, 210, 90))
-        try:
-            data = self._collect_board_data()
-            if not data["components"]:
-                raise RuntimeError("No footprints found on the current board.")
-            result = self._post_json(path, data)
-            violations = result if isinstance(result, list) else result.get("violations", [])
-            if not violations:
-                text = "No issues found."
-            else:
-                lines = [f"[{v.get('severity', 'warning').upper()}] {v.get('message', 'No details')}" for v in violations[:12]]
-                text = "\n".join(lines)
-            self._set_status(f"{title} complete.", (0, 210, 110))
-            self._show_text(title, text)
-        except Exception as exc:
-            self._set_status(f"{title} failed.", (255, 120, 120))
-            self._show_text("Error", str(exc))
 
 
 # ── Legacy Dialog for compatibility ───────────────────────────────────────────

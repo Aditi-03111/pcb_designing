@@ -41,6 +41,14 @@ def synthesize_circuit(
     simple_divider_circuit = _is_simple_divider_circuit(intent)
     simple_rc_filter_circuit = _is_simple_rc_filter_circuit(intent)
     simple_usb_utility_board = _is_simple_usb_utility_board(intent)
+    simple_regulator_board = _is_simple_regulator_board(intent)
+    simple_opamp_board = _is_simple_opamp_board(intent)
+    simple_timer_board = _is_simple_timer_board(intent)
+    simple_switch_board = _is_simple_switch_board(intent)
+    simple_comparator_board = _is_simple_comparator_board(intent)
+    simple_relay_board = _is_simple_relay_board(intent)
+    simple_protection_board = _is_simple_protection_board(intent)
+    simple_button_board = _is_simple_button_board(intent)
     simple_passive_signal_circuit = simple_divider_circuit or simple_rc_filter_circuit
 
     if simple_led_circuit:
@@ -51,6 +59,22 @@ def synthesize_circuit(
         return _build_simple_rc_filter_circuit(builder, intent)
     if simple_usb_utility_board:
         return _build_simple_usb_utility_board(builder, intent)
+    if simple_regulator_board:
+        return _build_simple_regulator_board(builder, intent, input_net, main_supply)
+    if simple_opamp_board:
+        return _build_simple_opamp_board(builder, intent, input_net)
+    if simple_timer_board:
+        return _build_simple_timer_board(builder, intent, input_net)
+    if simple_switch_board:
+        return _build_simple_switch_board(builder, intent, input_net)
+    if simple_comparator_board:
+        return _build_simple_comparator_board(builder, intent, input_net)
+    if simple_relay_board:
+        return _build_simple_relay_board(builder, intent, input_net)
+    if simple_protection_board:
+        return _build_simple_protection_board(builder, intent, input_net)
+    if simple_button_board:
+        return _build_simple_button_board(builder, intent, input_net)
 
     if intent.wants_usb:
         add_usb_power_entry(builder, vbus_net=input_net)
@@ -379,12 +403,146 @@ def _validated_simple_build(
             "source": "block_library_v1",
         },
     )
-    prefixes = {component.get("ref", "")[:1] for component in data.get("components", [])}
+    prefixes = {_ref_prefix(component.get("ref", "")) for component in data.get("components", [])}
     if not required_prefixes.issubset(prefixes):
         return None
     if prefixes & forbidden_prefixes:
         return None
     return data
+
+
+def _ref_prefix(ref: str) -> str:
+    chars = []
+    for ch in ref:
+        if ch.isalpha():
+            chars.append(ch)
+        else:
+            break
+    return "".join(chars) or ref[:1]
+
+
+def _is_simple_regulator_board(intent: DesignIntent) -> bool:
+    families = set(intent.families)
+    return intent.wants_regulator and families.issubset({"regulator", "led", "connector"}) and not any(
+        (intent.wants_mcu, intent.wants_switch, intent.wants_opamp, intent.wants_comparator, intent.wants_relay, intent.wants_protection, intent.wants_usb, intent.wants_button, intent.wants_divider, intent.wants_filter, intent.wants_timer)
+    )
+
+
+def _is_simple_opamp_board(intent: DesignIntent) -> bool:
+    families = set(intent.families)
+    return intent.wants_opamp and families.issubset({"opamp", "sensor", "connector"}) and not any(
+        (intent.wants_regulator, intent.wants_mcu, intent.wants_led, intent.wants_switch, intent.wants_comparator, intent.wants_relay, intent.wants_protection, intent.wants_usb, intent.wants_button, intent.wants_divider, intent.wants_filter, intent.wants_timer)
+    )
+
+
+def _is_simple_timer_board(intent: DesignIntent) -> bool:
+    families = set(intent.families)
+    return intent.wants_timer and families.issubset({"timer", "led", "connector"}) and not any(
+        (intent.wants_regulator, intent.wants_mcu, intent.wants_switch, intent.wants_opamp, intent.wants_comparator, intent.wants_relay, intent.wants_protection, intent.wants_usb, intent.wants_button, intent.wants_divider, intent.wants_filter)
+    )
+
+
+def _is_simple_switch_board(intent: DesignIntent) -> bool:
+    families = set(intent.families)
+    return intent.wants_switch and families.issubset({"switch", "connector", "led"}) and not any(
+        (intent.wants_regulator, intent.wants_mcu, intent.wants_opamp, intent.wants_comparator, intent.wants_relay, intent.wants_protection, intent.wants_usb, intent.wants_button, intent.wants_divider, intent.wants_filter, intent.wants_timer)
+    )
+
+
+def _is_simple_comparator_board(intent: DesignIntent) -> bool:
+    families = set(intent.families)
+    return intent.wants_comparator and families.issubset({"comparator", "sensor", "connector", "divider"}) and not any(
+        (intent.wants_regulator, intent.wants_mcu, intent.wants_led, intent.wants_switch, intent.wants_opamp, intent.wants_relay, intent.wants_protection, intent.wants_usb, intent.wants_button, intent.wants_filter, intent.wants_timer)
+    )
+
+
+def _is_simple_relay_board(intent: DesignIntent) -> bool:
+    families = set(intent.families)
+    return intent.wants_relay and families.issubset({"relay", "connector"}) and not any(
+        (intent.wants_regulator, intent.wants_mcu, intent.wants_led, intent.wants_switch, intent.wants_opamp, intent.wants_comparator, intent.wants_protection, intent.wants_usb, intent.wants_button, intent.wants_divider, intent.wants_filter, intent.wants_timer)
+    )
+
+
+def _is_simple_protection_board(intent: DesignIntent) -> bool:
+    families = set(intent.families)
+    return intent.wants_protection and families.issubset({"protection", "connector"}) and not any(
+        (intent.wants_regulator, intent.wants_mcu, intent.wants_led, intent.wants_switch, intent.wants_opamp, intent.wants_comparator, intent.wants_relay, intent.wants_usb, intent.wants_button, intent.wants_divider, intent.wants_filter, intent.wants_timer)
+    )
+
+
+def _is_simple_button_board(intent: DesignIntent) -> bool:
+    families = set(intent.families)
+    return intent.wants_button and families.issubset({"button", "connector"}) and not any(
+        (intent.wants_regulator, intent.wants_mcu, intent.wants_led, intent.wants_switch, intent.wants_opamp, intent.wants_comparator, intent.wants_relay, intent.wants_protection, intent.wants_usb, intent.wants_divider, intent.wants_filter, intent.wants_timer)
+    )
+
+
+def _build_simple_regulator_board(builder: CircuitBuilder, intent: DesignIntent, input_net: str, main_supply: str) -> Dict[str, Any]:
+    add_power_input(builder, net=input_net, label="Power input")
+    add_linear_regulator(builder, input_net=input_net, output_net=main_supply, output_voltage=_output_voltage_label(intent))
+    add_output_header(builder, signal_net=main_supply, label="Regulated output")
+    if intent.wants_led:
+        add_led_indicator(builder, input_net=main_supply, label="Status LED")
+    return _validated_simple_build(builder, intent, {"J", "U", "C"}, {"Q", "K", "F", "SW"})
+
+
+def _build_simple_opamp_board(builder: CircuitBuilder, intent: DesignIntent, input_net: str) -> Dict[str, Any]:
+    supply_net = "5V" if intent.supply_voltage is None else _input_net(intent)
+    add_power_input(builder, net=supply_net, label="Power input")
+    add_output_header(builder, signal_net="ANALOG_IN", label="Analog input")
+    add_opamp_buffer(builder, input_net="ANALOG_IN", output_net="BUFFER_OUT", supply_net=supply_net)
+    add_output_header(builder, signal_net="BUFFER_OUT", label="Buffered output")
+    return _validated_simple_build(builder, intent, {"J", "U", "C"}, {"Q", "K", "F", "SW"})
+
+
+def _build_simple_timer_board(builder: CircuitBuilder, intent: DesignIntent, input_net: str) -> Dict[str, Any]:
+    add_power_input(builder, net=input_net, label="Power input")
+    add_555_timer(builder, supply_net=input_net, output_net="TIMER_OUT")
+    add_output_header(builder, signal_net="TIMER_OUT", label="Timer output")
+    if intent.wants_led or "blink" in intent.normalized_prompt:
+        add_led_indicator(builder, input_net="TIMER_OUT", label="Timer-driven LED")
+    return _validated_simple_build(builder, intent, {"J", "U", "R", "C"}, {"Q", "K", "F", "SW"})
+
+
+def _build_simple_switch_board(builder: CircuitBuilder, intent: DesignIntent, input_net: str) -> Dict[str, Any]:
+    load_supply = "12V" if (intent.supply_voltage or 0) >= 9 else input_net
+    add_power_input(builder, net=load_supply, label="Load supply input")
+    add_output_header(builder, signal_net="CTRL", label="Control input")
+    add_mosfet_low_side_switch(builder, control_net="CTRL", supply_net=load_supply, switched_net="LOAD_RETURN")
+    if intent.wants_led:
+        add_led_indicator(builder, input_net="CTRL", label="Control/status LED")
+    return _validated_simple_build(builder, intent, {"J", "Q", "R"}, {"U", "K", "F", "SW"})
+
+
+def _build_simple_comparator_board(builder: CircuitBuilder, intent: DesignIntent, input_net: str) -> Dict[str, Any]:
+    supply_net = "5V" if intent.supply_voltage is None else _input_net(intent)
+    add_power_input(builder, net=supply_net, label="Power input")
+    add_output_header(builder, signal_net="SENSE_IN", label="Comparator input")
+    add_comparator_stage(builder, input_net="SENSE_IN", output_net="CMP_OUT", supply_net=supply_net)
+    add_output_header(builder, signal_net="CMP_OUT", label="Comparator output")
+    return _validated_simple_build(builder, intent, {"J", "U", "R", "C"}, {"Q", "K", "F", "SW"})
+
+
+def _build_simple_relay_board(builder: CircuitBuilder, intent: DesignIntent, input_net: str) -> Dict[str, Any]:
+    supply_net = "12V" if (intent.supply_voltage or 0) >= 9 else input_net
+    add_power_input(builder, net=supply_net, label="Power input")
+    add_output_header(builder, signal_net="RELAY_CTRL", label="Relay control input")
+    add_relay_driver(builder, control_net="RELAY_CTRL", supply_net=supply_net)
+    return _validated_simple_build(builder, intent, {"J", "K", "Q", "R", "D"}, {"U", "F", "SW"})
+
+
+def _build_simple_protection_board(builder: CircuitBuilder, intent: DesignIntent, input_net: str) -> Dict[str, Any]:
+    add_power_input(builder, net=input_net, label="Power input")
+    add_input_protection(builder, input_net=input_net, protected_net="VIN_PROTECTED")
+    add_output_header(builder, signal_net="VIN_PROTECTED", label="Protected output")
+    return _validated_simple_build(builder, intent, {"J", "F", "D"}, {"U", "Q", "K", "SW"})
+
+
+def _build_simple_button_board(builder: CircuitBuilder, intent: DesignIntent, input_net: str) -> Dict[str, Any]:
+    supply_net = "5V" if intent.supply_voltage is None else _input_net(intent)
+    add_power_input(builder, net=supply_net, label="Logic supply")
+    add_button_input(builder, output_net="BTN_OUT", supply_net=supply_net)
+    return _validated_simple_build(builder, intent, {"J", "SW", "R"}, {"U", "Q", "K", "F", "D"})
 
 
 def _needs_decoupling(intent: DesignIntent) -> bool:

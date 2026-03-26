@@ -119,6 +119,34 @@
       "priority": "quality",
       "expected_generation_mode": "synthesized",
       "expected_support_status": "supported"
+    },
+    {
+      "name": "simple_regulator_board",
+      "prompt": "Design a 12V to 5V linear regulator board with input and output headers",
+      "priority": "quality",
+      "expected_generation_mode": "synthesized",
+      "expected_support_status": "supported"
+    },
+    {
+      "name": "simple_opamp_board",
+      "prompt": "Create an op-amp buffer circuit for an analog sensor output",
+      "priority": "quality",
+      "expected_generation_mode": "synthesized",
+      "expected_support_status": "supported"
+    },
+    {
+      "name": "simple_timer_board",
+      "prompt": "Generate a simple 555 timer pulse generator with timing network and output header",
+      "priority": "quality",
+      "expected_generation_mode": "synthesized",
+      "expected_support_status": "supported"
+    },
+    {
+      "name": "simple_switch_board",
+      "prompt": "Build a 12V MOSFET low-side switch with control input and load connector",
+      "priority": "quality",
+      "expected_generation_mode": "synthesized",
+      "expected_support_status": "supported"
     }
   ]
 }

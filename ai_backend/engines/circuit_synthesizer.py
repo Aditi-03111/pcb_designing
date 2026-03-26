@@ -38,11 +38,21 @@ def synthesize_circuit(
     main_supply = _main_supply_net(intent)
     description = intent.title
     simple_led_circuit = _is_simple_led_circuit(intent)
-    simple_passive_signal_circuit = _is_simple_passive_signal_circuit(intent)
+    simple_divider_circuit = _is_simple_divider_circuit(intent)
+    simple_rc_filter_circuit = _is_simple_rc_filter_circuit(intent)
+    simple_usb_utility_board = _is_simple_usb_utility_board(intent)
+    simple_passive_signal_circuit = simple_divider_circuit or simple_rc_filter_circuit
 
     if simple_led_circuit:
-        add_power_input(builder, net=input_net, label="Battery input")
-    elif intent.wants_usb:
+        return _build_simple_led_circuit(builder, intent, input_net)
+    if simple_divider_circuit:
+        return _build_simple_divider_circuit(builder, intent)
+    if simple_rc_filter_circuit:
+        return _build_simple_rc_filter_circuit(builder, intent)
+    if simple_usb_utility_board:
+        return _build_simple_usb_utility_board(builder, intent)
+
+    if intent.wants_usb:
         add_usb_power_entry(builder, vbus_net=input_net)
     elif not simple_passive_signal_circuit:
         add_power_input(builder, net=input_net, label="Primary power input")
@@ -240,11 +250,141 @@ def _is_simple_led_circuit(intent: DesignIntent) -> bool:
     )
 
 
-def _is_simple_passive_signal_circuit(intent: DesignIntent) -> bool:
+def _is_simple_divider_circuit(intent: DesignIntent) -> bool:
     families = set(intent.families)
-    if not families:
+    if not intent.wants_divider or not families:
         return False
-    return families.issubset({"divider", "filter"})
+    return families.issubset({"divider", "connector"}) and not any(
+        (
+            intent.wants_regulator,
+            intent.wants_mcu,
+            intent.wants_led,
+            intent.wants_switch,
+            intent.wants_opamp,
+            intent.wants_comparator,
+            intent.wants_relay,
+            intent.wants_protection,
+            intent.wants_usb,
+            intent.wants_button,
+            intent.wants_timer,
+        )
+    )
+
+
+def _is_simple_rc_filter_circuit(intent: DesignIntent) -> bool:
+    families = set(intent.families)
+    if not intent.wants_filter or not families:
+        return False
+    return families.issubset({"filter", "connector"}) and not any(
+        (
+            intent.wants_regulator,
+            intent.wants_mcu,
+            intent.wants_led,
+            intent.wants_switch,
+            intent.wants_opamp,
+            intent.wants_comparator,
+            intent.wants_relay,
+            intent.wants_protection,
+            intent.wants_usb,
+            intent.wants_button,
+            intent.wants_timer,
+        )
+    )
+
+
+def _is_simple_passive_signal_circuit(intent: DesignIntent) -> bool:
+    return _is_simple_divider_circuit(intent) or _is_simple_rc_filter_circuit(intent)
+
+
+def _is_simple_usb_utility_board(intent: DesignIntent) -> bool:
+    families = set(intent.families)
+    if not intent.wants_usb or not families:
+        return False
+    return families.issubset({"usb", "led", "connector"}) and not any(
+        (
+            intent.wants_regulator,
+            intent.wants_mcu,
+            intent.wants_switch,
+            intent.wants_opamp,
+            intent.wants_comparator,
+            intent.wants_relay,
+            intent.wants_protection,
+            intent.wants_button,
+            intent.wants_timer,
+            intent.wants_divider,
+            intent.wants_filter,
+        )
+    )
+
+
+def _build_simple_led_circuit(builder: CircuitBuilder, intent: DesignIntent, input_net: str) -> Dict[str, Any]:
+    add_power_input(builder, net=input_net, label="Battery input")
+    add_led_indicator(builder, input_net=input_net, label="Indicator LED")
+    return _validated_simple_build(
+        builder,
+        intent,
+        required_prefixes={"J", "R", "D"},
+        forbidden_prefixes={"U", "Q", "K", "F", "SW"},
+    )
+
+
+def _build_simple_divider_circuit(builder: CircuitBuilder, intent: DesignIntent) -> Dict[str, Any]:
+    add_output_header(builder, signal_net="VIN", label="Input header")
+    add_voltage_divider(builder, input_net="VIN", output_net="DIV_OUT")
+    add_output_header(builder, signal_net="DIV_OUT", label="Output header")
+    return _validated_simple_build(
+        builder,
+        intent,
+        required_prefixes={"J", "R"},
+        forbidden_prefixes={"U", "Q", "K", "F", "SW", "D"},
+    )
+
+
+def _build_simple_rc_filter_circuit(builder: CircuitBuilder, intent: DesignIntent) -> Dict[str, Any]:
+    add_output_header(builder, signal_net="VIN", label="Input header")
+    add_rc_lowpass(builder, input_net="VIN", output_net="FILTER_OUT")
+    add_output_header(builder, signal_net="FILTER_OUT", label="Output header")
+    return _validated_simple_build(
+        builder,
+        intent,
+        required_prefixes={"J", "R", "C"},
+        forbidden_prefixes={"U", "Q", "K", "F", "SW", "D"},
+    )
+
+
+def _build_simple_usb_utility_board(builder: CircuitBuilder, intent: DesignIntent) -> Dict[str, Any]:
+    add_usb_power_entry(builder, vbus_net="5V")
+    add_led_indicator(builder, input_net="5V", label="Status LED")
+    add_decoupling_cap(builder, power_net="5V", gnd_net="GND")
+    add_output_header(builder, signal_net="5V", label="USB power output")
+    return _validated_simple_build(
+        builder,
+        intent,
+        required_prefixes={"J", "R", "C", "D"},
+        forbidden_prefixes={"U", "Q", "K", "F", "SW"},
+    )
+
+
+def _validated_simple_build(
+    builder: CircuitBuilder,
+    intent: DesignIntent,
+    required_prefixes: set[str],
+    forbidden_prefixes: set[str],
+) -> Dict[str, Any]:
+    data = builder.build(
+        description=intent.title,
+        metadata={
+            "generation_mode": "synthesized",
+            "intent": intent.as_dict(),
+            "source": "block_library_v1",
+        },
+    )
+    prefixes = {component.get("ref", "")[:1] for component in data.get("components", [])}
+    if not required_prefixes.issubset(prefixes):
+        return None
+    if prefixes & forbidden_prefixes:
+        return None
+    return data
 
 
 def _needs_decoupling(intent: DesignIntent) -> bool:

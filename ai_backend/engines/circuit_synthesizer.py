@@ -49,6 +49,11 @@ def synthesize_circuit(
     simple_relay_board = _is_simple_relay_board(intent)
     simple_protection_board = _is_simple_protection_board(intent)
     simple_button_board = _is_simple_button_board(intent)
+    protected_regulator_combo = _is_protected_regulator_combo(intent)
+    sensor_buffer_combo = _is_sensor_buffer_combo(intent)
+    comparator_switch_combo = _is_comparator_switch_combo(intent)
+    relay_sensor_combo = _is_relay_sensor_combo(intent)
+    timer_switch_combo = _is_timer_switch_combo(intent)
     simple_passive_signal_circuit = simple_divider_circuit or simple_rc_filter_circuit
 
     if simple_led_circuit:
@@ -75,6 +80,16 @@ def synthesize_circuit(
         return _build_simple_protection_board(builder, intent, input_net)
     if simple_button_board:
         return _build_simple_button_board(builder, intent, input_net)
+    if protected_regulator_combo:
+        return _build_protected_regulator_combo(builder, intent, input_net, main_supply)
+    if sensor_buffer_combo:
+        return _build_sensor_buffer_combo(builder, intent)
+    if comparator_switch_combo:
+        return _build_comparator_switch_combo(builder, intent, input_net)
+    if relay_sensor_combo:
+        return _build_relay_sensor_combo(builder, intent, input_net)
+    if timer_switch_combo:
+        return _build_timer_switch_combo(builder, intent, input_net)
 
     if intent.wants_usb:
         add_usb_power_entry(builder, vbus_net=input_net)
@@ -543,6 +558,85 @@ def _build_simple_button_board(builder: CircuitBuilder, intent: DesignIntent, in
     add_power_input(builder, net=supply_net, label="Logic supply")
     add_button_input(builder, output_net="BTN_OUT", supply_net=supply_net)
     return _validated_simple_build(builder, intent, {"J", "SW", "R"}, {"U", "Q", "K", "F", "D"})
+
+
+def _is_protected_regulator_combo(intent: DesignIntent) -> bool:
+    families = set(intent.families)
+    return intent.wants_protection and intent.wants_regulator and families.issubset({"protection", "regulator", "connector", "led"})
+
+
+def _is_sensor_buffer_combo(intent: DesignIntent) -> bool:
+    families = set(intent.families)
+    return intent.wants_regulator and intent.wants_opamp and intent.wants_filter and intent.wants_sensor and families.issubset({"regulator", "opamp", "filter", "sensor", "connector", "led"})
+
+
+def _is_comparator_switch_combo(intent: DesignIntent) -> bool:
+    families = set(intent.families)
+    return intent.wants_comparator and intent.wants_switch and families.issubset({"comparator", "switch", "connector", "sensor", "divider"})
+
+
+def _is_relay_sensor_combo(intent: DesignIntent) -> bool:
+    families = set(intent.families)
+    return intent.wants_relay and intent.wants_comparator and intent.wants_sensor and families.issubset({"relay", "comparator", "sensor", "connector", "divider"})
+
+
+def _is_timer_switch_combo(intent: DesignIntent) -> bool:
+    families = set(intent.families)
+    return intent.wants_timer and intent.wants_switch and families.issubset({"timer", "switch", "connector", "led"})
+
+
+def _build_protected_regulator_combo(builder: CircuitBuilder, intent: DesignIntent, input_net: str, main_supply: str) -> Dict[str, Any]:
+    add_power_input(builder, net=input_net, label="Power input")
+    add_input_protection(builder, input_net=input_net, protected_net="VIN_PROTECTED")
+    add_linear_regulator(builder, input_net="VIN_PROTECTED", output_net=main_supply, output_voltage=_output_voltage_label(intent))
+    add_output_header(builder, signal_net=main_supply, label="Regulated output")
+    if intent.wants_led:
+        add_led_indicator(builder, input_net=main_supply, label="Status LED")
+    return _validated_simple_build(builder, intent, {"J", "F", "D", "U", "C"}, {"Q", "K", "SW"})
+
+
+def _build_sensor_buffer_combo(builder: CircuitBuilder, intent: DesignIntent) -> Dict[str, Any]:
+    supply_net = _main_supply_net(intent)
+    input_net = _input_net(intent)
+    add_power_input(builder, net=input_net, label="Power input")
+    add_linear_regulator(builder, input_net=input_net, output_net=supply_net, output_voltage=_output_voltage_label(intent))
+    add_output_header(builder, signal_net="SENSOR_IN", label="Sensor input")
+    add_rc_lowpass(builder, input_net="SENSOR_IN", output_net="FILTER_OUT")
+    add_opamp_buffer(builder, input_net="FILTER_OUT", output_net="BUFFER_OUT", supply_net=supply_net)
+    add_output_header(builder, signal_net="BUFFER_OUT", label="Buffered output")
+    if intent.wants_led:
+        add_led_indicator(builder, input_net=supply_net, label="Status LED")
+    return _validated_simple_build(builder, intent, {"J", "U", "R", "C"}, {"Q", "K", "F", "SW"})
+
+
+def _build_comparator_switch_combo(builder: CircuitBuilder, intent: DesignIntent, input_net: str) -> Dict[str, Any]:
+    supply_net = "12V" if (intent.supply_voltage or 0) >= 9 else input_net
+    add_power_input(builder, net=supply_net, label="Power input")
+    add_output_header(builder, signal_net="SENSE_IN", label="Comparator input")
+    add_comparator_stage(builder, input_net="SENSE_IN", output_net="CMP_OUT", supply_net=supply_net)
+    add_mosfet_low_side_switch(builder, control_net="CMP_OUT", supply_net=supply_net, switched_net="LOAD_RETURN")
+    add_output_header(builder, signal_net="CMP_OUT", label="Control output")
+    return _validated_simple_build(builder, intent, {"J", "U", "Q", "R", "C"}, {"K", "F", "SW"})
+
+
+def _build_relay_sensor_combo(builder: CircuitBuilder, intent: DesignIntent, input_net: str) -> Dict[str, Any]:
+    supply_net = "12V" if (intent.supply_voltage or 0) >= 9 else input_net
+    add_power_input(builder, net=supply_net, label="Power input")
+    add_output_header(builder, signal_net="SENSE_IN", label="Sensor input")
+    add_comparator_stage(builder, input_net="SENSE_IN", output_net="CMP_OUT", supply_net=supply_net)
+    add_relay_driver(builder, control_net="CMP_OUT", supply_net=supply_net)
+    return _validated_simple_build(builder, intent, {"J", "U", "K", "Q", "R", "D", "C"}, {"F", "SW"})
+
+
+def _build_timer_switch_combo(builder: CircuitBuilder, intent: DesignIntent, input_net: str) -> Dict[str, Any]:
+    supply_net = "12V" if (intent.supply_voltage or 0) >= 9 else input_net
+    add_power_input(builder, net=supply_net, label="Power input")
+    add_555_timer(builder, supply_net=supply_net, output_net="TIMER_OUT")
+    add_output_header(builder, signal_net="TIMER_OUT", label="Timer output")
+    add_mosfet_low_side_switch(builder, control_net="TIMER_OUT", supply_net=supply_net, switched_net="LOAD_RETURN")
+    if intent.wants_led:
+        add_led_indicator(builder, input_net="TIMER_OUT", label="Timer-driven LED")
+    return _validated_simple_build(builder, intent, {"J", "U", "Q", "R", "C"}, {"K", "F", "SW"})
 
 
 def _needs_decoupling(intent: DesignIntent) -> bool:

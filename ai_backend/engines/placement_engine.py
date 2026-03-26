@@ -744,14 +744,37 @@ class PlacementEngine:
         self.rl_loaded: bool = False
 
     def load_rl_model(self, path: Optional[str] = None) -> bool:
-        model_path = path or str(
-            Path(__file__).parent.parent / "models" / "placement_model.onnx"
+        candidate_paths: List[Path] = []
+        if path:
+            candidate_paths.append(Path(path))
+
+        env_path = os.environ.get("PCB_PLACEMENT_MODEL")
+        if env_path:
+            candidate_paths.append(Path(env_path))
+
+        engine_dir = Path(__file__).resolve().parent
+        candidate_paths.extend(
+            [
+                engine_dir.parent.parent / "models" / "placement_model.onnx",
+                engine_dir.parent / "models" / "placement_model.onnx",
+                Path.cwd() / "models" / "placement_model.onnx",
+                Path.cwd() / "ai_backend" / "models" / "placement_model.onnx",
+            ]
         )
-        engine = ONNXRLEngine()
-        if engine.load(model_path):
-            self.rl_engine = engine
-            self.rl_loaded = True
-            return True
+
+        seen: set[str] = set()
+        for candidate in candidate_paths:
+            resolved = str(candidate)
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            engine = ONNXRLEngine()
+            if engine.load(resolved):
+                self.rl_engine = engine
+                self.rl_loaded = True
+                return True
+
+        logger.warning("No RL placement model found. Checked: %s", ", ".join(seen))
         return False
 
     # ── Main entry point ──────────────────────────────────────────────────────

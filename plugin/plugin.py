@@ -32,7 +32,8 @@ except Exception:
 
 try:
     from wx.lib.floatcanvas import NavCanvas as _NavCanvas
-    HAS_FLOATCANVAS = True
+    # Force False on macOS KiCad to prevent segmentation faults
+    HAS_FLOATCANVAS = False
 except Exception:
     _NavCanvas = None
     HAS_FLOATCANVAS = False
@@ -507,11 +508,16 @@ class AIPlacementPlugin(pcbnew.ActionPlugin):
         if result != wx.ID_OK:
             return
 
-        # Show main window and keep reference alive on self
-        self._frame = AIPCBFrame(None, board)
-        self._frame.CentreOnScreen()
-        self._frame.Show()
-        self._frame.Raise()
+        # Show main window with error handling for macOS stability
+        try:
+            self._frame = AIPCBFrame(None, board)
+            self._frame.CentreOnScreen()
+            self._frame.Show()
+            self._frame.Raise()
+        except Exception as exc:
+            wx.MessageBox(f"Failed to open AI PCB Assistant:\n{exc}", 
+                         "Plugin Error", wx.OK | wx.ICON_ERROR)
+            logger.error("AIPCBFrame creation failed: %s", exc)
     
     def _check_backend(self) -> bool:
         """Check if backend is available."""
@@ -657,108 +663,216 @@ class AIPCBFrame(wx.Frame):
         self.Bind(wx.EVT_CLOSE, self._on_close)
     
     def _init_ui(self):
-        """Initialize the main UI."""
+        """Initialize the main UI — v3.2 tabbed design."""
         self.CreateStatusBar()
         self.SetStatusText("Ready")
-        
-        # Menu bar
+
+        # ── Menu bar ──────────────────────────────────────────────────────────
         menubar = wx.MenuBar()
         file_menu = wx.Menu()
         file_menu.Append(wx.ID_EXIT, "E&xit\tCtrl+Q")
         self.Bind(wx.EVT_MENU, self._on_exit, id=wx.ID_EXIT)
         menubar.Append(file_menu, "&File")
-        
+
         tools_menu = wx.Menu()
         tools_menu.Append(1001, "&Settings\tCtrl+,")
         tools_menu.Append(1002, "&Refresh Board Data\tF5")
         self.Bind(wx.EVT_MENU, self._on_settings, id=1001)
         self.Bind(wx.EVT_MENU, self._on_refresh, id=1002)
         menubar.Append(tools_menu, "&Tools")
-        
         self.SetMenuBar(menubar)
-        
-        # Main splitter
-        splitter = wx.SplitterWindow(self)
-        
-        # Left panel: Controls
-        left_panel = self._create_left_panel(splitter)
-        
-        # Right panel: Visualization
-        right_panel = self._create_right_panel(splitter)
-        
-        splitter.SplitVertically(left_panel, right_panel, 400)
-        splitter.SetMinimumPaneSize(300)
-        
-        # Toolbar
-        toolbar = self.CreateToolBar(wx.TB_HORIZONTAL | wx.TB_TEXT)
-        toolbar.AddTool(101, "Optimize", wx.ArtProvider.GetBitmap(wx.ART_EXECUTABLE_FILE), "Optimize Placement")
-        toolbar.AddTool(102, "DFM Check", wx.ArtProvider.GetBitmap(wx.ART_TICK_MARK), "Check DFM")
-        toolbar.AddTool(103, "Generate", wx.ArtProvider.GetBitmap(wx.ART_NEW), "Generate Circuit")
-        toolbar.Realize()
-        
+
+        # ── Toolbar (ArtProvider bitmaps are safe on macOS) ───────────────────
+        tb = self.CreateToolBar(wx.TB_HORIZONTAL | wx.TB_TEXT)
+        tb.AddTool(101, "Optimize",
+                   wx.ArtProvider.GetBitmap(wx.ART_LIST_VIEW, wx.ART_TOOLBAR),
+                   "Optimize Placement")
+        tb.AddTool(102, "DFM Check",
+                   wx.ArtProvider.GetBitmap(wx.ART_TICK_MARK, wx.ART_TOOLBAR),
+                   "Check DFM")
+        tb.AddTool(103, "Generate",
+                   wx.ArtProvider.GetBitmap(wx.ART_NEW, wx.ART_TOOLBAR),
+                   "Generate Circuit")
+        tb.AddSeparator()
+        tb.AddTool(104, "Refresh",
+                   wx.ArtProvider.GetBitmap(wx.ART_REDO, wx.ART_TOOLBAR),
+                   "Refresh Board Data")
+        tb.Realize()
         self.Bind(wx.EVT_TOOL, self._on_optimize_tool, id=101)
         self.Bind(wx.EVT_TOOL, self._on_dfm_tool, id=102)
         self.Bind(wx.EVT_TOOL, self._on_generate_tool, id=103)
+        self.Bind(wx.EVT_TOOL, self._on_refresh, id=104)
+
+        # ── Main layout: Left notebook + Right canvas ─────────────────────────
+        main_sizer = wx.BoxSizer(wx.HORIZONTAL)
+
+        left_panel = self._create_left_panel(self)
+        main_sizer.Add(left_panel, 0, wx.EXPAND)
+
+        right_panel = self._create_right_panel(self)
+        main_sizer.Add(right_panel, 1, wx.EXPAND)
+
+        self.SetSizer(main_sizer)
     
     def _create_left_panel(self, parent) -> wx.Panel:
-        """Create left control panel."""
-        panel = _ScrolledPanelClass(parent, size=(400, -1))
-        sizer = wx.BoxSizer(wx.VERTICAL)
-        
-        # AI Assistant section
-        box = wx.StaticBox(panel, label="AI Assistant")
-        box_sizer = wx.StaticBoxSizer(box, wx.VERTICAL)
-        
-        self.prompt_ctrl = wx.TextCtrl(panel, style=wx.TE_MULTILINE, size=(-1, 100))
-        self.prompt_ctrl.SetHint("Describe what you want to do...\n"
-                                "Examples:\n"
-                                "- 'Optimize for minimal EMI'\n"
-                                "- 'Place decoupling caps near ICs'\n"
-                                "- 'Group analog components together'")
-        box_sizer.Add(self.prompt_ctrl, 0, wx.EXPAND | wx.ALL, 5)
-        
-        btn_run = wx.Button(panel, label="Execute")
+        """Create left notebook panel — v3.2 tabbed design."""
+        panel = wx.Panel(parent, size=(500, -1))
+        outer = wx.BoxSizer(wx.VERTICAL)
+
+        # Notebook with tabs
+        self.nb = wx.Notebook(panel)
+
+        # ── Tab 1: Assistant ───────────────────────────────────────────────────
+        asst_page = wx.Panel(self.nb)
+        asst_sizer = wx.BoxSizer(wx.VERTICAL)
+
+        asst_sizer.Add(wx.StaticText(asst_page, label="AI Assistant"), 0, wx.ALL, 10)
+        asst_sizer.Add(
+            wx.StaticText(asst_page, label="Choose a task, write intent in plain English, then run."),
+            0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10
+        )
+
+        # Task row
+        task_row = wx.BoxSizer(wx.HORIZONTAL)
+        task_row.Add(wx.StaticText(asst_page, label="Task"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        self.task_choice = wx.Choice(asst_page, choices=[
+            "Generate Circuit", "Optimize Placement", "DFM Check",
+            "Analyze Netlist", "Place Decoupling Caps", "Custom"
+        ])
+        self.task_choice.SetSelection(0)
+        task_row.Add(self.task_choice, 1)
+        asst_sizer.Add(task_row, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+
+        # Priority row
+        pri_row = wx.BoxSizer(wx.HORIZONTAL)
+        pri_row.Add(wx.StaticText(asst_page, label="Priority"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        self.priority_choice = wx.Choice(asst_page, choices=["quality", "speed", "size", "cost"])
+        self.priority_choice.SetSelection(0)
+        pri_row.Add(self.priority_choice, 1)
+        asst_sizer.Add(pri_row, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+
+        # Description label
+        asst_sizer.Add(
+            wx.StaticText(asst_page, label="Describe what you want to do:"),
+            0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10
+        )
+
+        # Prompt text area
+        self.prompt_ctrl = wx.TextCtrl(asst_page, style=wx.TE_MULTILINE, size=(-1, 100))
+        self.prompt_ctrl.SetHint("e.g. Build a battery-powered soil moisture monitoring circuit using an ESP32-C3...")
+        asst_sizer.Add(self.prompt_ctrl, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+
+        # Quick prompts
+        qp_label = wx.StaticText(asst_page, label="Quick prompts")
+        asst_sizer.Add(qp_label, 0, wx.LEFT | wx.BOTTOM, 10)
+        qp_row1 = wx.BoxSizer(wx.HORIZONTAL)
+        btn_qp1 = wx.Button(asst_page, label="Generate a 3.3V regulator with input/output caps")
+        btn_qp2 = wx.Button(asst_page, label="Generate a 555 timer astable LED blinker")
+        btn_qp1.Bind(wx.EVT_BUTTON, lambda e: self._set_quick_prompt(
+            "Generate a 3.3V regulator with input/output caps"))
+        btn_qp2.Bind(wx.EVT_BUTTON, lambda e: self._set_quick_prompt(
+            "Generate a 555 timer astable LED blinker"))
+        qp_row1.Add(btn_qp1, 1, wx.RIGHT, 4)
+        qp_row1.Add(btn_qp2, 1)
+        asst_sizer.Add(qp_row1, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+
+        qp_row2 = wx.BoxSizer(wx.HORIZONTAL)
+        btn_qp3 = wx.Button(asst_page, label="Optimize placement to reduce critical net length")
+        btn_qp4 = wx.Button(asst_page, label="Run DFM check for manufacturability issues")
+        btn_qp3.Bind(wx.EVT_BUTTON, lambda e: self._set_quick_prompt(
+            "Optimize placement to reduce critical net length"))
+        btn_qp4.Bind(wx.EVT_BUTTON, lambda e: self._set_quick_prompt(
+            "Run DFM check for manufacturability issues"))
+        qp_row2.Add(btn_qp3, 1, wx.RIGHT, 4)
+        qp_row2.Add(btn_qp4, 1)
+        asst_sizer.Add(qp_row2, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+
+        # Clear / Run / Cancel buttons
+        btn_row = wx.BoxSizer(wx.HORIZONTAL)
+        btn_row.AddStretchSpacer(1)
+        btn_clear = wx.Button(asst_page, label="Clear")
+        btn_run   = wx.Button(asst_page, label="Run")
+        btn_cancel = wx.Button(asst_page, label="Cancel")
+        btn_clear.Bind(wx.EVT_BUTTON, lambda e: self.prompt_ctrl.Clear())
         btn_run.Bind(wx.EVT_BUTTON, self._on_execute_prompt)
-        box_sizer.Add(btn_run, 0, wx.ALIGN_RIGHT | wx.ALL, 5)
-        
-        sizer.Add(box_sizer, 0, wx.EXPAND | wx.ALL, 10)
-        
-        # Component list
-        box2 = wx.StaticBox(panel, label="Components")
-        box2_sizer = wx.StaticBoxSizer(box2, wx.VERTICAL)
-        
-        self.comp_list = wx.ListCtrl(panel, style=wx.LC_REPORT)
+        btn_row.Add(btn_clear, 0, wx.RIGHT, 6)
+        btn_row.Add(btn_run, 0, wx.RIGHT, 6)
+        btn_row.Add(btn_cancel, 0)
+        asst_sizer.Add(btn_row, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+
+        # Response area
+        asst_sizer.Add(wx.StaticText(asst_page, label="Response"), 0, wx.LEFT | wx.BOTTOM, 10)
+        self.info_text = wx.TextCtrl(
+            asst_page,
+            style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_DONTWRAP,
+            size=(-1, 200)
+        )
+        asst_sizer.Add(self.info_text, 1, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+
+        asst_page.SetSizer(asst_sizer)
+        self.nb.AddPage(asst_page, "Assistant")
+
+        # ── Tab 2: Components ──────────────────────────────────────────────────
+        comp_page = wx.Panel(self.nb)
+        comp_sizer = wx.BoxSizer(wx.VERTICAL)
+        self.comp_list = wx.ListCtrl(comp_page, style=wx.LC_REPORT)
         self.comp_list.AppendColumn("Ref", width=60)
         self.comp_list.AppendColumn("Value", width=100)
-        self.comp_list.AppendColumn("Footprint", width=120)
-        self.comp_list.AppendColumn("X", width=50)
-        self.comp_list.AppendColumn("Y", width=50)
-        self.comp_list.AppendColumn("Fixed", width=50)
+        self.comp_list.AppendColumn("Footprint", width=150)
+        self.comp_list.AppendColumn("X", width=55)
+        self.comp_list.AppendColumn("Y", width=55)
+        self.comp_list.AppendColumn("Fixed", width=45)
         self.comp_list.Bind(wx.EVT_LIST_ITEM_SELECTED, self._on_component_selected)
-        box2_sizer.Add(self.comp_list, 1, wx.EXPAND | wx.ALL, 5)
-        
-        btn_fix = wx.Button(panel, label="Toggle Fixed")
+        comp_sizer.Add(self.comp_list, 1, wx.EXPAND | wx.ALL, 5)
+        btn_fix = wx.Button(comp_page, label="Toggle Fixed")
         btn_fix.Bind(wx.EVT_BUTTON, self._on_toggle_fixed)
-        box2_sizer.Add(btn_fix, 0, wx.ALL, 5)
-        
-        sizer.Add(box2_sizer, 1, wx.EXPAND | wx.ALL, 10)
-        
-        # Constraints
-        box3 = wx.StaticBox(panel, label="Constraints")
-        box3_sizer = wx.StaticBoxSizer(box3, wx.VERTICAL)
-        
-        self.constraint_list = wx.ListBox(panel)
-        box3_sizer.Add(self.constraint_list, 1, wx.EXPAND | wx.ALL, 5)
-        
-        btn_add_constraint = wx.Button(panel, label="Add Constraint")
-        btn_add_constraint.Bind(wx.EVT_BUTTON, self._on_add_constraint)
-        box3_sizer.Add(btn_add_constraint, 0, wx.ALL, 5)
-        
-        sizer.Add(box3_sizer, 0, wx.EXPAND | wx.ALL, 10)
-        
-        panel.SetSizer(sizer)
-        if hasattr(panel, "SetupScrolling"):
-            panel.SetupScrolling()
+        comp_sizer.Add(btn_fix, 0, wx.ALL, 5)
+        comp_page.SetSizer(comp_sizer)
+        self.nb.AddPage(comp_page, "Components")
+
+        # ── Tab 3: Nets ────────────────────────────────────────────────────────
+        nets_page = wx.Panel(self.nb)
+        nets_sizer = wx.BoxSizer(wx.VERTICAL)
+        self.net_list = wx.ListCtrl(nets_page, style=wx.LC_REPORT)
+        self.net_list.AppendColumn("Name", width=160)
+        self.net_list.AppendColumn("Type", width=80)
+        self.net_list.AppendColumn("Pins", width=50)
+        nets_sizer.Add(self.net_list, 1, wx.EXPAND | wx.ALL, 5)
+        nets_page.SetSizer(nets_sizer)
+        self.nb.AddPage(nets_page, "Nets")
+
+        # ── Tab 4: DFM ────────────────────────────────────────────────────────
+        dfm_page = wx.Panel(self.nb)
+        dfm_sizer = wx.BoxSizer(wx.VERTICAL)
+        self.dfm_text = wx.TextCtrl(dfm_page, style=wx.TE_MULTILINE | wx.TE_READONLY)
+        self.dfm_text.SetValue("Run a DFM check to see results here.")
+        dfm_sizer.Add(self.dfm_text, 1, wx.EXPAND | wx.ALL, 5)
+        dfm_page.SetSizer(dfm_sizer)
+        self.nb.AddPage(dfm_page, "DFM")
+
+        # ── Tab 5: History ────────────────────────────────────────────────────
+        hist_page = wx.Panel(self.nb)
+        hist_sizer = wx.BoxSizer(wx.VERTICAL)
+        self.hist_list = wx.ListCtrl(hist_page, style=wx.LC_REPORT)
+        self.hist_list.AppendColumn("Time", width=80)
+        self.hist_list.AppendColumn("Action", width=300)
+        hist_sizer.Add(self.hist_list, 1, wx.EXPAND | wx.ALL, 5)
+        hist_page.SetSizer(hist_sizer)
+        self.nb.AddPage(hist_page, "History")
+
+        # ── Tab 6: Constraints ────────────────────────────────────────────────
+        con_page = wx.Panel(self.nb)
+        con_sizer = wx.BoxSizer(wx.VERTICAL)
+        self.constraint_list = wx.ListBox(con_page)
+        con_sizer.Add(self.constraint_list, 1, wx.EXPAND | wx.ALL, 5)
+        btn_add = wx.Button(con_page, label="Add Constraint")
+        btn_add.Bind(wx.EVT_BUTTON, self._on_add_constraint)
+        con_sizer.Add(btn_add, 0, wx.ALL, 5)
+        con_page.SetSizer(con_sizer)
+        self.nb.AddPage(con_page, "Constraints")
+
+        outer.Add(self.nb, 1, wx.EXPAND)
+        panel.SetSizer(outer)
         return panel
     
     def _create_right_panel(self, parent) -> wx.Panel:
@@ -766,19 +880,11 @@ class AIPCBFrame(wx.Frame):
         panel = wx.Panel(parent)
         sizer = wx.BoxSizer(wx.VERTICAL)
         
-        # Toolbar for view options
-        tb = wx.ToolBar(panel, style=wx.TB_HORIZONTAL)
-        tb.AddCheckTool(201, "Ratsnest", wx.NullBitmap, wx.NullBitmap,
-                        shortHelp="Toggle ratsnest display")
-        tb.Bind(wx.EVT_TOOL, self._on_toggle_ratsnest, id=201)
-        tb.Realize()
-        # Set initial state after Realize() (ToggleTool is the wx4 way)
-        try:
-            tb.ToggleTool(201, CONFIG.show_ratsnest)
-        except Exception:
-            pass
-        self._ratsnest_toolbar = tb  # keep reference
-        sizer.Add(tb, 0, wx.EXPAND)
+        # Safe ratsnest toggle using a checkbox (avoids wx.NullBitmap crash on macOS)
+        self._ratsnest_cb = wx.CheckBox(panel, label=" Show Ratsnest")
+        self._ratsnest_cb.SetValue(CONFIG.show_ratsnest)
+        self._ratsnest_cb.Bind(wx.EVT_CHECKBOX, self._on_toggle_ratsnest)
+        sizer.Add(self._ratsnest_cb, 0, wx.ALL, 4)
         
         # Canvas
         self.canvas = PlacementPreviewCanvas(panel)
@@ -792,10 +898,11 @@ class AIPCBFrame(wx.Frame):
         return panel
     
     def _start_refresh_timer(self):
-        """Start timer for async result checking."""
+        """Start timer for async result checking with a safe delay."""
         self.timer = wx.Timer(self)
         self.Bind(wx.EVT_TIMER, self._on_timer, self.timer)
-        self.timer.Start(100)  # 100ms interval
+        # Delay start to avoid collisions during window initialization
+        wx.CallLater(500, self.timer.Start, 100)
     
     def _on_timer(self, event):
         """Check for async results."""
@@ -883,42 +990,42 @@ class AIPCBFrame(wx.Frame):
             except Exception as exc:
                 logger.warning("Skipping footprint due to error: %s", exc)
 
-        # Extract nets with classification
-        try:
-            # Use GetNetsByNetCode for better compatibility with KiCad 8/9
-            nets_dict = self.board.GetNetsByNetCode()
-            for net_code, net in nets_dict.items():
-                try:
-                    if net.GetNetCode() <= 0:
-                        continue
-                    
-                    net_name = net.GetNetname()
-                    net_type = self._classify_net(str(net_name))
-                    pins = []
-                    
-                    for pad in net.GetPads():
-                        try:
-                            parent = pad.GetParent()
-                            if not parent:
-                                continue
-                            pins.append({
-                                "ref": parent.GetReference(),
-                                "pin": str(pad.GetNumber()),
-                            })
-                        except Exception:
-                            pass
-                            
-                    if len(pins) >= 2:
-                        self.nets.append(NetInfo(
-                            name=str(net_name),
-                            code=net.GetNetCode(),
-                            net_type=net_type,
-                            pins=pins,
-                        ))
-                except Exception as exc:
-                    logger.warning("Skipping net: %s", exc)
-        except Exception as exc:
-            logger.error("Net extraction failed: %s", exc)
+        # BISECTION 3: Disable net extraction to identify crash
+        # try:
+        #     # Use GetNetsByNetCode for better compatibility with KiCad 8/9
+        #     nets_dict = self.board.GetNetsByNetCode()
+        #     for net_code, net in nets_dict.items():
+        #         try:
+        #             if net.GetNetCode() <= 0:
+        #                 continue
+        #             
+        #             net_name = net.GetNetname()
+        #             net_type = self._classify_net(str(net_name))
+        #             pins = []
+        #             
+        #             for pad in net.GetPads():
+        #                 try:
+        #                     parent = pad.GetParent()
+        #                     if not parent:
+        #                         continue
+        #                     pins.append({
+        #                         "ref": parent.GetReference(),
+        #                         "pin": str(pad.GetNumber()),
+        #                     })
+        #                 except Exception:
+        #                     pass
+        #                     
+        #             if len(pins) >= 2:
+        #                 self.nets.append(NetInfo(
+        #                     name=str(net_name),
+        #                     code=net.GetNetCode(),
+        #                     net_type=net_type,
+        #                     pins=pins,
+        #                 ))
+        #         except Exception as exc:
+        #             logger.warning("Skipping net: %s", exc)
+        # except Exception as exc:
+        #     logger.error("Net extraction failed: %s", exc)
         
         # Update UI
         self._update_component_list()
@@ -955,6 +1062,11 @@ class AIPCBFrame(wx.Frame):
         
         return NetType.SIGNAL
     
+    def _set_quick_prompt(self, text: str):
+        """Set a predefined prompt in the text area and switch to the Assistant tab."""
+        self.prompt_ctrl.SetValue(text)
+        self.nb.SetSelection(0)
+
     def _update_component_list(self):
         """Update the component list control."""
         self.comp_list.DeleteAllItems()
@@ -965,6 +1077,15 @@ class AIPCBFrame(wx.Frame):
             self.comp_list.SetItem(i, 3, f"{comp.x:.1f}")
             self.comp_list.SetItem(i, 4, f"{comp.y:.1f}")
             self.comp_list.SetItem(i, 5, "Yes" if comp.is_fixed else "No")
+
+        # Also populate nets tab
+        if hasattr(self, "net_list"):
+            self.net_list.DeleteAllItems()
+            for i, net in enumerate(self.nets):
+                self.net_list.InsertItem(i, net.name)
+                self.net_list.SetItem(i, 1, net.net_type.name.capitalize())
+                self.net_list.SetItem(i, 2, str(len(net.pins)))
+
     
     def _update_canvas(self):
         """Update the visualization canvas."""

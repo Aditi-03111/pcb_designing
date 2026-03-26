@@ -1285,7 +1285,7 @@ class AIPCBFrame(wx.Frame):
                 self.canvas.highlight_component(ref, "red")
 
     def _show_generate_result(self, result: Any):
-        """Display generate endpoint response in the info panel."""
+        """Display generate endpoint response and auto-open the schematic file."""
         if not isinstance(result, dict):
             self.info_text.SetValue("Generate failed: invalid response format")
             return
@@ -1298,6 +1298,7 @@ class AIPCBFrame(wx.Frame):
         circuit_data = result.get("circuit_data") or {}
         component_count = len(circuit_data.get("components", []))
         net_count = len(circuit_data.get("connections", []))
+        download_url = result.get("download_url", "")
 
         summary = (
             f"Generation complete!\n\n"
@@ -1305,10 +1306,53 @@ class AIPCBFrame(wx.Frame):
             f"Components: {component_count}\n"
             f"Nets: {net_count}\n"
             f"Time: {result.get('generation_time_ms', 0):.1f} ms\n"
-            f"Download: {result.get('download_url', 'n/a')}"
+            f"Download: {download_url}"
         )
         self.info_text.SetValue(summary)
-        self.SetStatusText("Generation complete")
+        self.SetStatusText("Generation complete — opening schematic...")
+
+        # Auto-open the generated schematic file in KiCad
+        if download_url:
+            filename = download_url.lstrip("/download/").lstrip("download/")
+            # Try the known output directory first
+            candidates = [
+                os.path.join(os.path.dirname(__file__), "..", "..", "ai_backend", "output", filename),
+                os.path.expanduser(f"~/Desktop/pcb_designing/ai_backend/output/{filename}"),
+                os.path.join(CONFIG.backend_url.replace("http://", "").replace("localhost:8765", ""),
+                             "output", filename),
+            ]
+            # Also try downloading it via HTTP
+            local_path = None
+            for candidate in candidates:
+                candidate = os.path.normpath(candidate)
+                if os.path.exists(candidate):
+                    local_path = candidate
+                    break
+
+            if local_path is None:
+                # Download from server and save to a temp file
+                try:
+                    full_url = f"{CONFIG.backend_url}/download/{filename}"
+                    save_path = os.path.join(tempfile.gettempdir(), filename)
+                    req = urllib.request.urlopen(full_url, timeout=10)
+                    with open(save_path, "wb") as f:
+                        f.write(req.read())
+                    local_path = save_path
+                except Exception as exc:
+                    logger.warning("Could not download schematic: %s", exc)
+
+            if local_path and os.path.exists(local_path):
+                try:
+                    import subprocess
+                    subprocess.Popen(["open", local_path])  # macOS: open with KiCad
+                    self.SetStatusText(f"Opened: {os.path.basename(local_path)}")
+                    self.info_text.AppendText(f"\n\nOpened in KiCad: {local_path}")
+                except Exception as exc:
+                    logger.warning("Could not open schematic: %s", exc)
+                    self.info_text.AppendText(f"\n\n⚠️ Could not auto-open: {exc}")
+            else:
+                self.info_text.AppendText(f"\n\n⚠️ File not found locally. Download from:\n{CONFIG.backend_url}/download/{filename}")
+                self.SetStatusText("Generation complete")
     
     def _on_toggle_fixed(self, event):
         """Toggle fixed status of selected components."""
